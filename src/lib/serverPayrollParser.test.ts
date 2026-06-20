@@ -1,8 +1,19 @@
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it } from "vitest";
 
 import { parsePayrollHtmlOnServer } from "./serverPayrollParser";
 
 describe("parsePayrollHtmlOnServer", () => {
+  it("keeps jsdom out of the route handler parser bundle", () => {
+    const source = readFileSync(
+      new URL("./serverPayrollParser.ts", import.meta.url),
+      "utf8",
+    );
+
+    expect(source).not.toContain("jsdom");
+  });
+
   it("parses payroll HTML in a Node route handler without DOMParser", () => {
     const result = parsePayrollHtmlOnServer(`
       <span class="header-text">Store 2006 payroll</span>

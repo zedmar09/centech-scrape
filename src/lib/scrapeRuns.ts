@@ -12,6 +12,7 @@ export type PayrollScrapeStoreResult = {
   rows: number;
   sections: number;
   warnings: string[];
+  scraped_html: string | null;
   error?: string;
 };
 
@@ -135,6 +136,7 @@ async function scrapeAndParseStore(
         rows: parseResult.payload.length,
         sections: parseResult.sections.length,
         warnings: parseResult.warnings,
+        scraped_html: html,
       },
     };
   } catch (caught) {
@@ -145,6 +147,7 @@ async function scrapeAndParseStore(
         rows: 0,
         sections: 0,
         warnings: [],
+        scraped_html: null,
         error:
           caught instanceof Error
             ? caught.message

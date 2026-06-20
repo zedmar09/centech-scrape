@@ -112,6 +112,7 @@ export type FlexeposPayrollConfig = {
   navigationWaitUntil: LoadState;
   password: string | null;
   payrollLinkText: string;
+  requiresRemoteBrowser: boolean;
   selectors: FlexeposPayrollSelectors;
   startDate: string | null;
   stores: string[];
@@ -231,6 +232,7 @@ export function createFlexeposPayrollConfig(
     navigationWaitUntil: readLoadState(env.FLEXEPOS_NAVIGATION_WAIT_UNTIL),
     password: env.FMS_PASSWORD || null,
     payrollLinkText: env.FLEXEPOS_PAYROLL_LINK_TEXT?.trim() || "Payroll",
+    requiresRemoteBrowser: env.VERCEL === "1" || env.VERCEL === "true",
     selectors: {
       username: env.FLEXEPOS_USERNAME_SELECTOR?.trim() || "#login\\:username",
       password: env.FLEXEPOS_PASSWORD_SELECTOR?.trim() || "#login\\:password",
@@ -366,6 +368,7 @@ async function scrapeFlexeposStore(
         rows: parseResult.payload.length,
         sections: parseResult.sections.length,
         warnings: parseResult.warnings,
+        scraped_html: html,
       },
     };
   } catch (caught) {
@@ -376,6 +379,7 @@ async function scrapeFlexeposStore(
         rows: 0,
         sections: 0,
         warnings: [],
+        scraped_html: null,
         error:
           caught instanceof Error
             ? caught.message
@@ -513,6 +517,12 @@ function validateFlexeposConfig(
 
   if (!config.startDate || !config.endDate) {
     throw new Error("Select a start date and end date before scraping Flexepos payroll.");
+  }
+
+  if (config.requiresRemoteBrowser && !config.browserWsEndpoint) {
+    throw new Error(
+      "Set FLEXEPOS_PLAYWRIGHT_WS_ENDPOINT in Vercel to a remote browser websocket/CDP endpoint before scraping Flexepos.",
+    );
   }
 }
 

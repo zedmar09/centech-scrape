@@ -182,7 +182,7 @@ function readScraperSource(value: string | undefined): PayrollScraperSource {
     case "flexepos":
       return value;
     default:
-      return "playwright";
+      return "flexepos";
   }
 }
 

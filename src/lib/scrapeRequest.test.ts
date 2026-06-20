@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { parseStoreNumbersInput } from "./scrapeRequest";
+import {
+  createScrapeRunRequestBody,
+  parseStoreNumbersInput,
+} from "./scrapeRequest";
 
 describe("parseStoreNumbersInput", () => {
   it("accepts pasted store numbers separated by commas, spaces, or new lines", () => {
@@ -16,5 +19,19 @@ describe("parseStoreNumbersInput", () => {
       "2006",
       "3012",
     ]);
+  });
+});
+
+describe("createScrapeRunRequestBody", () => {
+  it("sends only the selected pay-period dates", () => {
+    expect(
+      createScrapeRunRequestBody({
+        endDate: "2026-06-15",
+        startDate: "2026-06-01",
+      }),
+    ).toEqual({
+      end_date: "2026-06-15",
+      start_date: "2026-06-01",
+    });
   });
 });

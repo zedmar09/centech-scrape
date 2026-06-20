@@ -6,6 +6,10 @@ import {
 } from "./payrollScraper";
 
 describe("payrollScraper config", () => {
+  it("defaults to the Flexepos full-flow scraper mode", () => {
+    expect(createPayrollScraperConfig({}).source).toBe("flexepos");
+  });
+
   it("builds a store URL from the configured template", () => {
     expect(
       buildPayrollStoreUrl(

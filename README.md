@@ -1,9 +1,9 @@
 # Payroll Payload Builder
 
-Next.js + MUI app for building payroll computation payloads from uploaded HTML
-exports or a server-side Flexepos scrape. In Flexepos mode the app logs in, runs
-each store payroll report, parses the HTML immediately, combines the rows, and
-discards the raw HTML.
+Next.js + MUI app for building payroll computation payloads from a server-side
+Flexepos scrape. The app logs in, runs each configured store payroll report,
+parses the HTML immediately, combines the rows, and shows the raw scraped HTML
+for inspection without saving it.
 
 ## Getting Started
 
@@ -22,9 +22,9 @@ npx playwright install chromium
 ```
 
 Fill `.env.local` with `FMS_USERNAME`, `FMS_PASSWORD`, and `STORE_NUMBERS`.
-The start and end date are selected in the UI for each scrape run. The default
-`.env.example` already contains the 87 stores found in the Centech `env.txt`
-review.
+The start and end date are selected in the UI for each scrape run. For local
+testing, `STORE_NUMBERS=2006,2017` is enough. The default `.env.example`
+contains the 87 stores found in the Centech `env.txt` review.
 
 Run the app:
 
@@ -32,9 +32,8 @@ Run the app:
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000). Leave Store Numbers blank
-to use `STORE_NUMBERS`, or enter a smaller comma-separated subset like
-`2006,2016` for a test run.
+Open [http://localhost:3000](http://localhost:3000). Select the start and end
+date, then start the scrape. Stores come from `STORE_NUMBERS`.
 
 ## Vercel Staging Setup
 

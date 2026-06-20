@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Alert,
   Box,
@@ -15,6 +15,8 @@ import {
   Stack,
   SvgIcon,
   SvgIconProps,
+  Tab,
+  Tabs,
   Table,
   TableBody,
   TableCell,
@@ -27,23 +29,10 @@ import {
   Typography,
   createTheme,
 } from "@mui/material";
-import { FileRejection, useDropzone } from "react-dropzone";
 
-import {
-  PayrollParseResult,
-  PayrollPayload,
-  combinePayrollParseResults,
-  parsePayrollHtml,
-} from "@/lib/payrollParser";
+import type { PayrollParseResult, PayrollPayload } from "@/lib/payrollParser";
 import type { PayrollScrapeRun, PayrollScrapeStoreResult } from "@/lib/scrapeRuns";
-import {
-  QueueEntry,
-  QueueStatus,
-  QueuedPayrollFile,
-  StagedPayrollFile,
-  createQueueEntriesFromStagedFiles,
-  createStagedPayrollFiles,
-} from "@/lib/fileQueue";
+import { createScrapeRunRequestBody } from "@/lib/scrapeRequest";
 
 const theme = createTheme({
   palette: {
@@ -95,17 +84,16 @@ const theme = createTheme({
   },
 });
 
-type PayrollQueuedFile = QueuedPayrollFile<PayrollParseResult>;
-type PayrollQueueEntry = QueueEntry<PayrollParseResult>;
 type ScrapeUiStatus = "idle" | "running" | "complete" | "error";
 type SaveUiStatus = "idle" | "saving" | "saved" | "error";
 
+const EMPTY_PAYROLL_RESULT: PayrollParseResult = {
+  payload: [],
+  sections: [],
+  warnings: [],
+};
+
 export function PayrollImporter() {
-  const parseChainRef = useRef<Promise<void>>(Promise.resolve());
-  const [stagedFiles, setStagedFiles] = useState<StagedPayrollFile[]>([]);
-  const [queuedFiles, setQueuedFiles] = useState<PayrollQueuedFile[]>([]);
-  const [dropErrors, setDropErrors] = useState<string[]>([]);
-  const [storeInput, setStoreInput] = useState("");
   const [startDateInput, setStartDateInput] = useState("");
   const [endDateInput, setEndDateInput] = useState("");
   const [scrapeRun, setScrapeRun] = useState<PayrollScrapeRun | null>(null);
@@ -115,22 +103,9 @@ export function PayrollImporter() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
-  const uploadedResult = useMemo(() => {
-    return combinePayrollParseResults(
-      queuedFiles
-        .map((file) => file.result)
-        .filter((fileResult): fileResult is PayrollParseResult =>
-          Boolean(fileResult),
-        ),
-    );
-  }, [queuedFiles]);
-
   const result = useMemo(() => {
-    return combinePayrollParseResults([
-      uploadedResult,
-      ...(scrapeRun ? [scrapeRun.result] : []),
-    ]);
-  }, [scrapeRun, uploadedResult]);
+    return scrapeRun?.result ?? EMPTY_PAYROLL_RESULT;
+  }, [scrapeRun]);
 
   const payloadJson = useMemo(() => {
     return JSON.stringify(result.payload, null, 2);
@@ -143,33 +118,6 @@ export function PayrollImporter() {
   const totalOvertimeHours = useMemo(() => {
     return sumHours(result.payload, "overtime_hours");
   }, [result.payload]);
-
-  const queueSummary = useMemo(() => {
-    const done = queuedFiles.filter((file) => file.status === "done").length;
-    const failed = queuedFiles.filter((file) => file.status === "error").length;
-    const active = queuedFiles.filter((file) =>
-      ["queued", "parsing"].includes(file.status),
-    ).length;
-    const processed = done + failed;
-    const progress =
-      queuedFiles.length === 0 ? 0 : (processed / queuedFiles.length) * 100;
-
-    return {
-      active,
-      done,
-      failed,
-      processed,
-      progress,
-      total: queuedFiles.length,
-      totalSize: queuedFiles.reduce((total, file) => total + file.size, 0),
-    };
-  }, [queuedFiles]);
-
-  const fileWarnings = useMemo(() => {
-    return queuedFiles.flatMap((file) =>
-      (file.result?.warnings ?? []).map((warning) => `${file.name}: ${warning}`),
-    );
-  }, [queuedFiles]);
 
   const scrapeSummary = useMemo(() => {
     const storeResults = scrapeRun?.store_results ?? [];
@@ -189,104 +137,7 @@ export function PayrollImporter() {
     startDateInput && endDateInput && startDateInput > endDateInput,
   );
 
-  const dropzone = useDropzone({
-    accept: {
-      "text/html": [".html", ".htm"],
-    },
-    multiple: true,
-    noClick: true,
-    onDrop: (acceptedFiles, fileRejections) => {
-      setDropErrors(formatFileRejections(fileRejections));
-      setStagedFiles((currentFiles) => [
-        ...currentFiles,
-        ...createStagedPayrollFiles(acceptedFiles),
-      ]);
-      setCopied(false);
-    },
-  });
-
-  function proceedWithStagedFiles() {
-    setCopied(false);
-
-    if (stagedFiles.length === 0) {
-      return;
-    }
-
-    const entries = createQueueEntriesFromStagedFiles<PayrollParseResult>(
-      stagedFiles,
-    );
-
-    setQueuedFiles((currentFiles) => [
-      ...currentFiles,
-      ...entries.map((entry) => entry.queuedFile),
-    ]);
-    setStagedFiles([]);
-    setDropErrors([]);
-
-    parseChainRef.current = parseChainRef.current.then(() =>
-      parseQueuedFiles(entries),
-    );
-  }
-
-  function removeStagedFile(fileId: string) {
-    setStagedFiles((currentFiles) =>
-      currentFiles.filter((file) => file.id !== fileId),
-    );
-  }
-
-  function clearStagedFiles() {
-    setStagedFiles([]);
-    setDropErrors([]);
-  }
-
-  async function parseQueuedFiles(entries: PayrollQueueEntry[]) {
-    for (const entry of entries) {
-      updateQueuedFile(entry.queuedFile.id, {
-        status: "parsing",
-        error: undefined,
-        result: undefined,
-      });
-      await pauseForUi();
-
-      try {
-        const html = await entry.file.text();
-        const parsed = parsePayrollHtml(html);
-        updateQueuedFile(entry.queuedFile.id, {
-          status: "done",
-          result: parsed,
-        });
-      } catch (caught) {
-        updateQueuedFile(entry.queuedFile.id, {
-          status: "error",
-          error:
-            caught instanceof Error
-              ? caught.message
-              : "Unable to parse this HTML file.",
-        });
-      }
-
-      await pauseForUi();
-    }
-  }
-
-  function updateQueuedFile(
-    fileId: string,
-    patch: Partial<PayrollQueuedFile>,
-  ) {
-    setQueuedFiles((currentFiles) =>
-      currentFiles.map((file) =>
-        file.id === fileId
-          ? {
-              ...file,
-              ...patch,
-            }
-          : file,
-      ),
-    );
-  }
-
-  function clearQueue() {
-    setQueuedFiles([]);
+  function clearScrapeResults() {
     setScrapeRun(null);
     setScrapeStatus("idle");
     setScrapeError(null);
@@ -306,7 +157,9 @@ export function PayrollImporter() {
     const anchor = document.createElement("a");
 
     anchor.href = url;
-    anchor.download = buildDownloadName(queuedFiles, scrapeRun);
+    anchor.download = scrapeRun
+      ? `${scrapeRun.run_id}.payload.json`
+      : "payroll-payload.json";
     anchor.click();
     URL.revokeObjectURL(url);
   }
@@ -325,12 +178,12 @@ export function PayrollImporter() {
         headers: {
           "content-type": "application/json",
         },
-        body: JSON.stringify({
-          end_date: endDateInput,
-          start_date: startDateInput,
-          stores: storeInput,
-          concurrency: 3,
-        }),
+        body: JSON.stringify(
+          createScrapeRunRequestBody({
+            endDate: endDateInput,
+            startDate: startDateInput,
+          }),
+        ),
       });
 
       if (!response.ok) {
@@ -406,8 +259,8 @@ export function PayrollImporter() {
                   Payroll Payload Builder
                 </Typography>
                 <Typography color="text.secondary" sx={{ mt: 0.75 }}>
-                  Scrape configured payroll stores or upload HTML exports, then
-                  review the combined computation payload.
+                  Scrape configured payroll stores, inspect the HTML returned by
+                  the site, then review the computation payload.
                 </Typography>
               </Box>
 
@@ -431,20 +284,15 @@ export function PayrollImporter() {
                 <Button
                   variant="text"
                   startIcon={<ClearIcon />}
-                  disabled={
-                    (queuedFiles.length === 0 && !scrapeRun) ||
-                    queueSummary.active > 0 ||
-                    scrapeStatus === "running"
-                  }
-                  onClick={clearQueue}
+                  disabled={!scrapeRun || scrapeStatus === "running"}
+                  onClick={clearScrapeResults}
                 >
-                  Clear Parsed Results
+                  Clear Scrape Results
                 </Button>
               </Box>
             </Stack>
 
             <ScrapePanel
-              storeInput={storeInput}
               endDateInput={endDateInput}
               hasInvalidDateRange={hasInvalidScrapeDateRange}
               scrapeRun={scrapeRun}
@@ -452,7 +300,6 @@ export function PayrollImporter() {
               scrapeSummary={scrapeSummary}
               startDateInput={startDateInput}
               onEndDateInputChange={setEndDateInput}
-              onStoreInputChange={setStoreInput}
               onStartDateInputChange={setStartDateInput}
               onStart={startScrapeRun}
             />
@@ -482,80 +329,9 @@ export function PayrollImporter() {
               </Alert>
             ) : null}
 
-            <DropzonePanel
-              dropzone={dropzone}
-              stagedFiles={stagedFiles}
-              dropErrors={dropErrors}
-              onProceed={proceedWithStagedFiles}
-              onRemove={removeStagedFile}
-              onClear={clearStagedFiles}
-            />
-
-            {queuedFiles.length > 0 ? (
-              <Paper variant="outlined" sx={{ overflow: "hidden" }}>
-                <Box sx={{ p: 2 }}>
-                  <Stack
-                    direction={{ xs: "column", md: "row" }}
-                    spacing={1.5}
-                    sx={{
-                      alignItems: { xs: "flex-start", md: "center" },
-                      justifyContent: "space-between",
-                    }}
-                  >
-                    <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
-                      <Chip label={`${queueSummary.total} files`} color="secondary" />
-                      <Chip label={formatFileSize(queueSummary.totalSize)} />
-                      <Chip label={`${queueSummary.done} done`} color="success" />
-                      <Chip label={`${queueSummary.active} queued/parsing`} />
-                      <Chip label={`${queueSummary.failed} failed`} color="warning" />
-                      <Chip label={`${result.payload.length} rows`} />
-                      <Chip label={`${result.sections.length} section(s)`} />
-                    </Box>
-                    {queueSummary.active > 0 ? (
-                      <Chip
-                        icon={<QueueIcon />}
-                        color="primary"
-                        label="Parsing queue"
-                        variant="outlined"
-                      />
-                    ) : (
-                      <Chip
-                        icon={<CheckCircleIcon />}
-                        color="success"
-                        label="Queue complete"
-                        variant="outlined"
-                      />
-                    )}
-                  </Stack>
-                </Box>
-                <LinearProgress
-                  variant="determinate"
-                  value={Math.min(queueSummary.progress, 100)}
-                />
-              </Paper>
+            {scrapeRun ? (
+              <ScrapedHtmlPanel stores={scrapeRun.store_results} />
             ) : null}
-
-            {queueSummary.failed > 0 ? (
-              <Alert severity="warning" icon={<WarningIcon />}>
-                {queueSummary.failed} file(s) failed to parse. Review the file
-                queue for details.
-              </Alert>
-            ) : null}
-
-            {fileWarnings.slice(0, 3).map((warning) => (
-              <Alert key={warning} severity="warning" icon={<WarningIcon />}>
-                {warning}
-              </Alert>
-            ))}
-
-            {fileWarnings.length > 3 ? (
-              <Alert severity="warning" icon={<WarningIcon />}>
-                {fileWarnings.length - 3} more file warning(s) are listed in the
-                file queue.
-              </Alert>
-            ) : null}
-
-            {queuedFiles.length > 0 ? <FileQueueTable files={queuedFiles} /> : null}
 
             <Stack
               direction={{ xs: "column", lg: "row" }}
@@ -697,7 +473,6 @@ function SectionHeader({
 }
 
 function ScrapePanel({
-  storeInput,
   endDateInput,
   hasInvalidDateRange,
   scrapeRun,
@@ -705,11 +480,9 @@ function ScrapePanel({
   scrapeSummary,
   startDateInput,
   onEndDateInputChange,
-  onStoreInputChange,
   onStartDateInputChange,
   onStart,
 }: {
-  storeInput: string;
   endDateInput: string;
   hasInvalidDateRange: boolean;
   scrapeRun: PayrollScrapeRun | null;
@@ -723,7 +496,6 @@ function ScrapePanel({
   };
   startDateInput: string;
   onEndDateInputChange: (value: string) => void;
-  onStoreInputChange: (value: string) => void;
   onStartDateInputChange: (value: string) => void;
   onStart: () => void;
 }) {
@@ -743,20 +515,10 @@ function ScrapePanel({
           spacing={2}
           sx={{ alignItems: { xs: "stretch", md: "flex-start" } }}
         >
-          <TextField
-            label="Store Numbers"
-            helperText="Leave blank to use the server STORE_NUMBERS list."
-            multiline
-            minRows={3}
-            onChange={(event) => onStoreInputChange(event.target.value)}
-            placeholder="2006, 2016, 2017"
-            sx={{ flex: 1 }}
-            value={storeInput}
-          />
           <Stack
             direction={{ xs: "column", sm: "row", md: "column", lg: "row" }}
             spacing={1.5}
-            sx={{ minWidth: { md: 260, lg: 380 } }}
+            sx={{ flex: 1, maxWidth: { lg: 520 } }}
           >
             <TextField
               error={hasInvalidDateRange}
@@ -771,6 +533,7 @@ function ScrapePanel({
                   shrink: true,
                 },
               }}
+              sx={{ minWidth: 160 }}
               type="date"
               value={startDateInput}
             />
@@ -788,6 +551,7 @@ function ScrapePanel({
                   shrink: true,
                 },
               }}
+              sx={{ minWidth: 160 }}
               type="date"
               value={endDateInput}
             />
@@ -895,162 +659,81 @@ function ScrapeStoreTable({ stores }: { stores: PayrollScrapeStoreResult[] }) {
   );
 }
 
-function FileQueueTable({ files }: { files: PayrollQueuedFile[] }) {
-  return (
-    <Paper variant="outlined" sx={{ overflow: "hidden" }}>
-      <SectionHeader title="File Queue" />
-      <Divider />
-      <TableContainer sx={{ maxHeight: 320 }}>
-        <Table stickyHeader size="small" aria-label="HTML file parse queue">
-          <TableHead>
-            <TableRow>
-              <TableCell>File</TableCell>
-              <TableCell>Size</TableCell>
-              <TableCell>Status</TableCell>
-              <TableCell align="right">Rows</TableCell>
-              <TableCell align="right">Sections</TableCell>
-              <TableCell>Notes</TableCell>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {files.map((file) => (
-              <TableRow key={file.id}>
-                <TableCell>{file.name}</TableCell>
-                <TableCell>{formatFileSize(file.size)}</TableCell>
-                <TableCell>
-                  <Chip
-                    color={getStatusColor(file.status)}
-                    label={getStatusLabel(file.status)}
-                    size="small"
-                    variant={file.status === "done" ? "outlined" : "filled"}
-                  />
-                </TableCell>
-                <TableCell align="right">{file.result?.payload.length ?? 0}</TableCell>
-                <TableCell align="right">{file.result?.sections.length ?? 0}</TableCell>
-                <TableCell sx={{ color: "text.secondary" }}>
-                  {getQueueNote(file)}
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </TableContainer>
-    </Paper>
+type ScrapedHtmlStoreResult = PayrollScrapeStoreResult & {
+  scraped_html: string;
+};
+
+function ScrapedHtmlPanel({ stores }: { stores: PayrollScrapeStoreResult[] }) {
+  const [selectedStoreNumber, setSelectedStoreNumber] = useState<string | false>(
+    false,
   );
-}
-
-function DropzonePanel({
-  dropzone,
-  stagedFiles,
-  dropErrors,
-  onProceed,
-  onRemove,
-  onClear,
-}: {
-  dropzone: ReturnType<typeof useDropzone>;
-  stagedFiles: StagedPayrollFile[];
-  dropErrors: string[];
-  onProceed: () => void;
-  onRemove: (fileId: string) => void;
-  onClear: () => void;
-}) {
-  const rootProps = dropzone.getRootProps();
-  const inputProps = dropzone.getInputProps();
+  const htmlStores = stores.filter(
+    (store): store is ScrapedHtmlStoreResult =>
+      typeof store.scraped_html === "string" && store.scraped_html.length > 0,
+  );
+  const activeStore =
+    htmlStores.find((store) => store.store_number === selectedStoreNumber) ??
+    htmlStores[0] ??
+    null;
+  const activeStoreNumber = activeStore?.store_number ?? false;
 
   return (
     <Paper variant="outlined" sx={{ overflow: "hidden" }}>
-      <Box
-        {...rootProps}
-        sx={{
-          p: { xs: 2, md: 3 },
-          border: "2px dashed",
-          borderColor: dropzone.isDragActive ? "primary.main" : "divider",
-          bgcolor: dropzone.isDragActive ? "rgba(20, 83, 45, 0.06)" : "white",
-          cursor: "default",
-        }}
-      >
-        <input {...inputProps} />
-        <Stack
-          direction={{ xs: "column", md: "row" }}
-          spacing={2}
-          sx={{
-            alignItems: { xs: "stretch", md: "center" },
-            justifyContent: "space-between",
-          }}
-        >
-          <Box>
-            <Typography component="h2" variant="h2">
-              Drop HTML Files
-            </Typography>
-            <Typography color="text.secondary" sx={{ mt: 0.5 }}>
-              Add files here first. Parsing starts only after you confirm the
-              selection.
-            </Typography>
-          </Box>
-          <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
-            <Button
-              variant="outlined"
-              startIcon={<UploadIcon />}
-              onClick={dropzone.open}
-            >
-              Select Files
-            </Button>
-            <Button
-              variant="contained"
-              color="secondary"
-              startIcon={<QueueIcon />}
-              disabled={stagedFiles.length === 0}
-              onClick={onProceed}
-            >
-              Proceed
-            </Button>
-            <Button
-              variant="text"
-              startIcon={<ClearIcon />}
-              disabled={stagedFiles.length === 0}
-              onClick={onClear}
-            >
-              Clear Selected Files
-            </Button>
-          </Box>
-        </Stack>
-      </Box>
-
-      {dropErrors.map((error) => (
-        <Alert key={error} severity="warning" icon={<WarningIcon />}>
-          {error}
-        </Alert>
-      ))}
-
-      {stagedFiles.length > 0 ? (
+      <SectionHeader title="Scraped HTML">
+        <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
+          <Chip label={`${htmlStores.length} store(s)`} size="small" />
+          {activeStore ? (
+            <Chip
+              label={formatCharacterCount(activeStore.scraped_html.length)}
+              size="small"
+            />
+          ) : null}
+        </Box>
+      </SectionHeader>
+      <Divider />
+      {htmlStores.length > 0 ? (
         <>
-          <Divider />
-          <TableContainer sx={{ maxHeight: 240 }}>
-            <Table stickyHeader size="small" aria-label="Selected HTML files">
-              <TableHead>
-                <TableRow>
-                  <TableCell>Selected File</TableCell>
-                  <TableCell>Size</TableCell>
-                  <TableCell align="right">Action</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {stagedFiles.map((file) => (
-                  <TableRow key={file.id}>
-                    <TableCell>{file.name}</TableCell>
-                    <TableCell>{formatFileSize(file.size)}</TableCell>
-                    <TableCell align="right">
-                      <Button size="small" onClick={() => onRemove(file.id)}>
-                        Remove
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </TableContainer>
+          <Tabs
+            allowScrollButtonsMobile
+            onChange={(_, value: string) => setSelectedStoreNumber(value)}
+            scrollButtons="auto"
+            sx={{ borderBottom: 1, borderColor: "divider", px: 1 }}
+            value={activeStoreNumber}
+            variant="scrollable"
+          >
+            {htmlStores.map((store) => (
+              <Tab
+                key={store.store_number}
+                label={`Store ${store.store_number}`}
+                value={store.store_number}
+              />
+            ))}
+          </Tabs>
+          <Box
+            component="pre"
+            sx={{
+              m: 0,
+              p: 2,
+              minHeight: 260,
+              maxHeight: 520,
+              overflow: "auto",
+              bgcolor: "#101820",
+              color: "#dbeafe",
+              fontFamily: "var(--font-geist-mono), ui-monospace, monospace",
+              fontSize: "0.78rem",
+              lineHeight: 1.5,
+              whiteSpace: "pre-wrap",
+              overflowWrap: "anywhere",
+            }}
+          >
+            {activeStore?.scraped_html}
+          </Box>
         </>
-      ) : null}
+      ) : (
+        <Box sx={{ p: 2, color: "text.secondary" }}>
+          No scraped HTML returned.
+        </Box>
+      )}
     </Paper>
   );
 }
@@ -1106,33 +789,8 @@ function formatHours(value: number) {
   });
 }
 
-function formatFileSize(size: number) {
-  if (size < 1024) {
-    return `${size} B`;
-  }
-
-  if (size < 1024 * 1024) {
-    return `${(size / 1024).toFixed(1)} KB`;
-  }
-
-  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function buildDownloadName(
-  files: PayrollQueuedFile[],
-  scrapeRun: PayrollScrapeRun | null,
-) {
-  if (files.length === 0 && scrapeRun) {
-    return `${scrapeRun.run_id}.payload.json`;
-  }
-
-  if (files.length === 1 && !scrapeRun) {
-    return `${files[0].name.replace(/\.[^.]+$/, "")}.payload.json`;
-  }
-
-  const sourceCount = files.length + (scrapeRun ? scrapeRun.store_results.length : 0);
-
-  return `combined-payroll-payload-${sourceCount}-sources.json`;
+function formatCharacterCount(value: number) {
+  return `${value.toLocaleString()} chars`;
 }
 
 async function readApiError(response: Response) {
@@ -1147,72 +805,6 @@ async function readApiError(response: Response) {
   }
 
   return `Request failed with ${response.status}.`;
-}
-
-function pauseForUi() {
-  return new Promise((resolve) => {
-    window.setTimeout(resolve, 0);
-  });
-}
-
-function formatFileRejections(rejections: FileRejection[]) {
-  return rejections.map((rejection) => {
-    const reasons = rejection.errors.map((error) => error.message).join(", ");
-
-    return `${rejection.file.name}: ${reasons}`;
-  });
-}
-
-function getStatusLabel(status: QueueStatus) {
-  switch (status) {
-    case "queued":
-      return "Queued";
-    case "parsing":
-      return "Parsing";
-    case "done":
-      return "Done";
-    case "error":
-      return "Error";
-  }
-}
-
-function getStatusColor(
-  status: QueueStatus,
-): "default" | "primary" | "success" | "error" {
-  switch (status) {
-    case "queued":
-      return "default";
-    case "parsing":
-      return "primary";
-    case "done":
-      return "success";
-    case "error":
-      return "error";
-  }
-}
-
-function getQueueNote(file: PayrollQueuedFile) {
-  if (file.error) {
-    return file.error;
-  }
-
-  if (file.status === "queued") {
-    return "Waiting to parse";
-  }
-
-  if (file.status === "parsing") {
-    return "Reading HTML";
-  }
-
-  if ((file.result?.warnings.length ?? 0) > 0) {
-    return file.result?.warnings.join(" ");
-  }
-
-  if (file.result?.payload.length === 0) {
-    return "No payroll rows found";
-  }
-
-  return "Parsed";
 }
 
 function getScrapeStatusLabel(status: PayrollScrapeStoreResult["status"]) {
@@ -1262,15 +854,6 @@ function getScrapeStoreNote(store: PayrollScrapeStoreResult) {
   return "Parsed immediately after scrape";
 }
 
-function UploadIcon(props: SvgIconProps) {
-  return (
-    <SvgIcon {...props}>
-      <path d="M11 16h2V7.83l3.59 3.58L18 10l-6-6-6 6 1.41 1.41L11 7.83V16Z" />
-      <path d="M5 18h14v2H5v-2Z" />
-    </SvgIcon>
-  );
-}
-
 function SaveIcon(props: SvgIconProps) {
   return (
     <SvgIcon {...props}>
@@ -1318,14 +901,6 @@ function WarningIcon(props: SvgIconProps) {
   return (
     <SvgIcon {...props}>
       <path d="M1 21h22L12 2 1 21Zm12-3h-2v-2h2v2Zm0-4h-2v-4h2v4Z" />
-    </SvgIcon>
-  );
-}
-
-function QueueIcon(props: SvgIconProps) {
-  return (
-    <SvgIcon {...props}>
-      <path d="M4 5h16v2H4V5Zm0 6h16v2H4v-2Zm0 6h10v2H4v-2Zm13.5-.5L20 19l-2.5 2.5-1.4-1.4 1.1-1.1-1.1-1.1 1.4-1.4Z" />
     </SvgIcon>
   );
 }

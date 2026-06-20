@@ -31,7 +31,7 @@ function payrollHtml(storeNumber: string, employeeId: number) {
 }
 
 describe("runPayrollScrape", () => {
-  it("scrapes stores, parses HTML immediately, and returns only payload data", async () => {
+  it("scrapes stores, parses HTML immediately, and returns scraped HTML for display", async () => {
     const scrapedStores: string[] = [];
 
     const run = await runPayrollScrape({
@@ -47,6 +47,16 @@ describe("runPayrollScrape", () => {
     expect(scrapedStores).toEqual(["2006", "3012"]);
     expect(run.run_id).toBe("run_test");
     expect(run.status).toBe("done");
+    expect(run.store_results).toEqual([
+      expect.objectContaining({
+        store_number: "2006",
+        scraped_html: payrollHtml("2006", 10),
+      }),
+      expect.objectContaining({
+        store_number: "3012",
+        scraped_html: payrollHtml("3012", 20),
+      }),
+    ]);
     expect(run.result.payload).toEqual([
       {
         employee_id: 10,
@@ -63,7 +73,6 @@ describe("runPayrollScrape", () => {
         overtime_hours: 1.5,
       },
     ]);
-    expect(JSON.stringify(run)).not.toContain("<table>");
   });
 
   it("keeps going when one store fails to scrape", async () => {
@@ -90,6 +99,7 @@ describe("runPayrollScrape", () => {
       expect.objectContaining({
         store_number: "9999",
         status: "error",
+        scraped_html: null,
         error: "Site timeout",
       }),
     ]);

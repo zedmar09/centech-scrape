@@ -4,6 +4,7 @@ import {
   DEFAULT_FLEXEPOS_STORE_NUMBERS,
   createFlexeposPayrollConfig,
   resolveRequestedStores,
+  runFlexeposPayrollScrape,
 } from "./flexeposPayrollScraper";
 
 describe("flexeposPayrollScraper config", () => {
@@ -90,5 +91,24 @@ describe("flexeposPayrollScraper config", () => {
 
   it("uses the Centech table wait selector by default", () => {
     expect(createFlexeposPayrollConfig({}).selectors.payrollTable).toBe("table");
+  });
+
+  it("requires a remote browser endpoint on Vercel", async () => {
+    const config = createFlexeposPayrollConfig(
+      {
+        FMS_USERNAME: "demo-user",
+        FMS_PASSWORD: "demo-password",
+        STORE_NUMBERS: "2006",
+        VERCEL: "1",
+      },
+      {
+        startDate: "2026-06-01",
+        endDate: "2026-06-14",
+      },
+    );
+
+    await expect(runFlexeposPayrollScrape({ config })).rejects.toThrow(
+      "Set FLEXEPOS_PLAYWRIGHT_WS_ENDPOINT in Vercel",
+    );
   });
 });

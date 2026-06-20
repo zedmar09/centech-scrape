@@ -1,5 +1,20 @@
 const STORE_NUMBER_PATTERN = /^\d+$/;
 
+export type ScrapeRunRequestDates = {
+  endDate: string;
+  startDate: string;
+};
+
+export function createScrapeRunRequestBody({
+  endDate,
+  startDate,
+}: ScrapeRunRequestDates) {
+  return {
+    end_date: endDate,
+    start_date: startDate,
+  };
+}
+
 export function parseStoreNumbersInput(value: unknown): string[] {
   const rawStores = Array.isArray(value)
     ? value.filter((item): item is string => typeof item === "string")
