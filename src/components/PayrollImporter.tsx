@@ -1,0 +1,1339 @@
+"use client";
+
+import { useMemo, useRef, useState } from "react";
+import {
+  Alert,
+  Box,
+  Button,
+  Chip,
+  Container,
+  CssBaseline,
+  Divider,
+  IconButton,
+  LinearProgress,
+  Paper,
+  Stack,
+  SvgIcon,
+  SvgIconProps,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  TextField,
+  ThemeProvider,
+  Tooltip,
+  Typography,
+  createTheme,
+} from "@mui/material";
+import { FileRejection, useDropzone } from "react-dropzone";
+
+import {
+  PayrollParseResult,
+  PayrollPayload,
+  combinePayrollParseResults,
+  parsePayrollHtml,
+} from "@/lib/payrollParser";
+import type { PayrollScrapeRun, PayrollScrapeStoreResult } from "@/lib/scrapeRuns";
+import {
+  QueueEntry,
+  QueueStatus,
+  QueuedPayrollFile,
+  StagedPayrollFile,
+  createQueueEntriesFromStagedFiles,
+  createStagedPayrollFiles,
+} from "@/lib/fileQueue";
+
+const theme = createTheme({
+  palette: {
+    mode: "light",
+    background: {
+      default: "#f4f6f8",
+      paper: "#ffffff",
+    },
+    primary: {
+      main: "#14532d",
+      contrastText: "#ffffff",
+    },
+    secondary: {
+      main: "#334155",
+    },
+    success: {
+      main: "#16803c",
+    },
+    warning: {
+      main: "#b45309",
+    },
+    text: {
+      primary: "#18202a",
+      secondary: "#5b6675",
+    },
+  },
+  shape: {
+    borderRadius: 8,
+  },
+  typography: {
+    fontFamily: "var(--font-geist-sans), Arial, sans-serif",
+    h1: {
+      fontSize: "2rem",
+      lineHeight: 1.2,
+      fontWeight: 700,
+      letterSpacing: 0,
+    },
+    h2: {
+      fontSize: "1.1rem",
+      lineHeight: 1.25,
+      fontWeight: 700,
+      letterSpacing: 0,
+    },
+    button: {
+      textTransform: "none",
+      fontWeight: 700,
+      letterSpacing: 0,
+    },
+  },
+});
+
+type PayrollQueuedFile = QueuedPayrollFile<PayrollParseResult>;
+type PayrollQueueEntry = QueueEntry<PayrollParseResult>;
+type ScrapeUiStatus = "idle" | "running" | "complete" | "error";
+type SaveUiStatus = "idle" | "saving" | "saved" | "error";
+
+export function PayrollImporter() {
+  const parseChainRef = useRef<Promise<void>>(Promise.resolve());
+  const [stagedFiles, setStagedFiles] = useState<StagedPayrollFile[]>([]);
+  const [queuedFiles, setQueuedFiles] = useState<PayrollQueuedFile[]>([]);
+  const [dropErrors, setDropErrors] = useState<string[]>([]);
+  const [storeInput, setStoreInput] = useState("");
+  const [startDateInput, setStartDateInput] = useState("");
+  const [endDateInput, setEndDateInput] = useState("");
+  const [scrapeRun, setScrapeRun] = useState<PayrollScrapeRun | null>(null);
+  const [scrapeStatus, setScrapeStatus] = useState<ScrapeUiStatus>("idle");
+  const [scrapeError, setScrapeError] = useState<string | null>(null);
+  const [saveStatus, setSaveStatus] = useState<SaveUiStatus>("idle");
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const uploadedResult = useMemo(() => {
+    return combinePayrollParseResults(
+      queuedFiles
+        .map((file) => file.result)
+        .filter((fileResult): fileResult is PayrollParseResult =>
+          Boolean(fileResult),
+        ),
+    );
+  }, [queuedFiles]);
+
+  const result = useMemo(() => {
+    return combinePayrollParseResults([
+      uploadedResult,
+      ...(scrapeRun ? [scrapeRun.result] : []),
+    ]);
+  }, [scrapeRun, uploadedResult]);
+
+  const payloadJson = useMemo(() => {
+    return JSON.stringify(result.payload, null, 2);
+  }, [result.payload]);
+
+  const totalRegularHours = useMemo(() => {
+    return sumHours(result.payload, "regular_hours");
+  }, [result.payload]);
+
+  const totalOvertimeHours = useMemo(() => {
+    return sumHours(result.payload, "overtime_hours");
+  }, [result.payload]);
+
+  const queueSummary = useMemo(() => {
+    const done = queuedFiles.filter((file) => file.status === "done").length;
+    const failed = queuedFiles.filter((file) => file.status === "error").length;
+    const active = queuedFiles.filter((file) =>
+      ["queued", "parsing"].includes(file.status),
+    ).length;
+    const processed = done + failed;
+    const progress =
+      queuedFiles.length === 0 ? 0 : (processed / queuedFiles.length) * 100;
+
+    return {
+      active,
+      done,
+      failed,
+      processed,
+      progress,
+      total: queuedFiles.length,
+      totalSize: queuedFiles.reduce((total, file) => total + file.size, 0),
+    };
+  }, [queuedFiles]);
+
+  const fileWarnings = useMemo(() => {
+    return queuedFiles.flatMap((file) =>
+      (file.result?.warnings ?? []).map((warning) => `${file.name}: ${warning}`),
+    );
+  }, [queuedFiles]);
+
+  const scrapeSummary = useMemo(() => {
+    const storeResults = scrapeRun?.store_results ?? [];
+    const failed = storeResults.filter((store) => store.status === "error").length;
+    const done = storeResults.filter((store) => store.status === "done").length;
+
+    return {
+      done,
+      failed,
+      rows: scrapeRun?.result.payload.length ?? 0,
+      sections: scrapeRun?.result.sections.length ?? 0,
+      total: storeResults.length,
+    };
+  }, [scrapeRun]);
+
+  const hasInvalidScrapeDateRange = Boolean(
+    startDateInput && endDateInput && startDateInput > endDateInput,
+  );
+
+  const dropzone = useDropzone({
+    accept: {
+      "text/html": [".html", ".htm"],
+    },
+    multiple: true,
+    noClick: true,
+    onDrop: (acceptedFiles, fileRejections) => {
+      setDropErrors(formatFileRejections(fileRejections));
+      setStagedFiles((currentFiles) => [
+        ...currentFiles,
+        ...createStagedPayrollFiles(acceptedFiles),
+      ]);
+      setCopied(false);
+    },
+  });
+
+  function proceedWithStagedFiles() {
+    setCopied(false);
+
+    if (stagedFiles.length === 0) {
+      return;
+    }
+
+    const entries = createQueueEntriesFromStagedFiles<PayrollParseResult>(
+      stagedFiles,
+    );
+
+    setQueuedFiles((currentFiles) => [
+      ...currentFiles,
+      ...entries.map((entry) => entry.queuedFile),
+    ]);
+    setStagedFiles([]);
+    setDropErrors([]);
+
+    parseChainRef.current = parseChainRef.current.then(() =>
+      parseQueuedFiles(entries),
+    );
+  }
+
+  function removeStagedFile(fileId: string) {
+    setStagedFiles((currentFiles) =>
+      currentFiles.filter((file) => file.id !== fileId),
+    );
+  }
+
+  function clearStagedFiles() {
+    setStagedFiles([]);
+    setDropErrors([]);
+  }
+
+  async function parseQueuedFiles(entries: PayrollQueueEntry[]) {
+    for (const entry of entries) {
+      updateQueuedFile(entry.queuedFile.id, {
+        status: "parsing",
+        error: undefined,
+        result: undefined,
+      });
+      await pauseForUi();
+
+      try {
+        const html = await entry.file.text();
+        const parsed = parsePayrollHtml(html);
+        updateQueuedFile(entry.queuedFile.id, {
+          status: "done",
+          result: parsed,
+        });
+      } catch (caught) {
+        updateQueuedFile(entry.queuedFile.id, {
+          status: "error",
+          error:
+            caught instanceof Error
+              ? caught.message
+              : "Unable to parse this HTML file.",
+        });
+      }
+
+      await pauseForUi();
+    }
+  }
+
+  function updateQueuedFile(
+    fileId: string,
+    patch: Partial<PayrollQueuedFile>,
+  ) {
+    setQueuedFiles((currentFiles) =>
+      currentFiles.map((file) =>
+        file.id === fileId
+          ? {
+              ...file,
+              ...patch,
+            }
+          : file,
+      ),
+    );
+  }
+
+  function clearQueue() {
+    setQueuedFiles([]);
+    setScrapeRun(null);
+    setScrapeStatus("idle");
+    setScrapeError(null);
+    setSaveStatus("idle");
+    setSaveError(null);
+    setCopied(false);
+  }
+
+  async function copyPayload() {
+    await navigator.clipboard.writeText(payloadJson);
+    setCopied(true);
+  }
+
+  function downloadPayload() {
+    const blob = new Blob([payloadJson], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+
+    anchor.href = url;
+    anchor.download = buildDownloadName(queuedFiles, scrapeRun);
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function startScrapeRun() {
+    setScrapeStatus("running");
+    setScrapeError(null);
+    setScrapeRun(null);
+    setSaveStatus("idle");
+    setSaveError(null);
+    setCopied(false);
+
+    try {
+      const response = await fetch("/api/scrape-runs", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          end_date: endDateInput,
+          start_date: startDateInput,
+          stores: storeInput,
+          concurrency: 3,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(await readApiError(response));
+      }
+
+      const run = (await response.json()) as PayrollScrapeRun;
+
+      setScrapeRun(run);
+      setScrapeStatus("complete");
+    } catch (caught) {
+      setScrapeStatus("error");
+      setScrapeError(
+        caught instanceof Error
+          ? caught.message
+          : "Unable to complete this scrape run.",
+      );
+    }
+  }
+
+  async function savePayload() {
+    setSaveStatus("saving");
+    setSaveError(null);
+
+    try {
+      const response = await fetch("/api/payroll-payloads", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          run_id: scrapeRun?.run_id ?? null,
+          payload: result.payload,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(await readApiError(response));
+      }
+
+      setSaveStatus("saved");
+    } catch (caught) {
+      setSaveStatus("error");
+      setSaveError(
+        caught instanceof Error ? caught.message : "Unable to save this payload.",
+      );
+    }
+  }
+
+  return (
+    <ThemeProvider theme={theme}>
+      <CssBaseline />
+      <Box
+        component="main"
+        sx={{
+          minHeight: "100vh",
+          bgcolor: "background.default",
+          py: { xs: 3, md: 5 },
+        }}
+      >
+        <Container maxWidth="xl">
+          <Stack spacing={3}>
+            <Stack
+              direction={{ xs: "column", md: "row" }}
+              spacing={2}
+              sx={{
+                alignItems: { xs: "stretch", md: "center" },
+                justifyContent: "space-between",
+              }}
+            >
+              <Box>
+                <Typography component="h1" variant="h1">
+                  Payroll Payload Builder
+                </Typography>
+                <Typography color="text.secondary" sx={{ mt: 0.75 }}>
+                  Scrape configured payroll stores or upload HTML exports, then
+                  review the combined computation payload.
+                </Typography>
+              </Box>
+
+              <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
+                <Button
+                  variant="contained"
+                  startIcon={<SaveIcon />}
+                  disabled={result.payload.length === 0 || saveStatus === "saving"}
+                  onClick={savePayload}
+                >
+                  {saveStatus === "saving" ? "Saving" : "Save Payload"}
+                </Button>
+                <Button
+                  variant="outlined"
+                  startIcon={<DownloadIcon />}
+                  disabled={result.payload.length === 0}
+                  onClick={downloadPayload}
+                >
+                  Download JSON
+                </Button>
+                <Button
+                  variant="text"
+                  startIcon={<ClearIcon />}
+                  disabled={
+                    (queuedFiles.length === 0 && !scrapeRun) ||
+                    queueSummary.active > 0 ||
+                    scrapeStatus === "running"
+                  }
+                  onClick={clearQueue}
+                >
+                  Clear Parsed Results
+                </Button>
+              </Box>
+            </Stack>
+
+            <ScrapePanel
+              storeInput={storeInput}
+              endDateInput={endDateInput}
+              hasInvalidDateRange={hasInvalidScrapeDateRange}
+              scrapeRun={scrapeRun}
+              scrapeStatus={scrapeStatus}
+              scrapeSummary={scrapeSummary}
+              startDateInput={startDateInput}
+              onEndDateInputChange={setEndDateInput}
+              onStoreInputChange={setStoreInput}
+              onStartDateInputChange={setStartDateInput}
+              onStart={startScrapeRun}
+            />
+
+            {scrapeStatus === "error" && scrapeError ? (
+              <Alert severity="error" icon={<WarningIcon />}>
+                {scrapeError}
+              </Alert>
+            ) : null}
+
+            {scrapeRun?.status === "completed_with_errors" ? (
+              <Alert severity="warning" icon={<WarningIcon />}>
+                {scrapeSummary.failed} store(s) failed. Successful stores were
+                still parsed into the combined payload.
+              </Alert>
+            ) : null}
+
+            {saveStatus === "saved" ? (
+              <Alert severity="success" icon={<CheckCircleIcon />}>
+                Payload sent to the backend.
+              </Alert>
+            ) : null}
+
+            {saveStatus === "error" && saveError ? (
+              <Alert severity="error" icon={<WarningIcon />}>
+                {saveError}
+              </Alert>
+            ) : null}
+
+            <DropzonePanel
+              dropzone={dropzone}
+              stagedFiles={stagedFiles}
+              dropErrors={dropErrors}
+              onProceed={proceedWithStagedFiles}
+              onRemove={removeStagedFile}
+              onClear={clearStagedFiles}
+            />
+
+            {queuedFiles.length > 0 ? (
+              <Paper variant="outlined" sx={{ overflow: "hidden" }}>
+                <Box sx={{ p: 2 }}>
+                  <Stack
+                    direction={{ xs: "column", md: "row" }}
+                    spacing={1.5}
+                    sx={{
+                      alignItems: { xs: "flex-start", md: "center" },
+                      justifyContent: "space-between",
+                    }}
+                  >
+                    <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
+                      <Chip label={`${queueSummary.total} files`} color="secondary" />
+                      <Chip label={formatFileSize(queueSummary.totalSize)} />
+                      <Chip label={`${queueSummary.done} done`} color="success" />
+                      <Chip label={`${queueSummary.active} queued/parsing`} />
+                      <Chip label={`${queueSummary.failed} failed`} color="warning" />
+                      <Chip label={`${result.payload.length} rows`} />
+                      <Chip label={`${result.sections.length} section(s)`} />
+                    </Box>
+                    {queueSummary.active > 0 ? (
+                      <Chip
+                        icon={<QueueIcon />}
+                        color="primary"
+                        label="Parsing queue"
+                        variant="outlined"
+                      />
+                    ) : (
+                      <Chip
+                        icon={<CheckCircleIcon />}
+                        color="success"
+                        label="Queue complete"
+                        variant="outlined"
+                      />
+                    )}
+                  </Stack>
+                </Box>
+                <LinearProgress
+                  variant="determinate"
+                  value={Math.min(queueSummary.progress, 100)}
+                />
+              </Paper>
+            ) : null}
+
+            {queueSummary.failed > 0 ? (
+              <Alert severity="warning" icon={<WarningIcon />}>
+                {queueSummary.failed} file(s) failed to parse. Review the file
+                queue for details.
+              </Alert>
+            ) : null}
+
+            {fileWarnings.slice(0, 3).map((warning) => (
+              <Alert key={warning} severity="warning" icon={<WarningIcon />}>
+                {warning}
+              </Alert>
+            ))}
+
+            {fileWarnings.length > 3 ? (
+              <Alert severity="warning" icon={<WarningIcon />}>
+                {fileWarnings.length - 3} more file warning(s) are listed in the
+                file queue.
+              </Alert>
+            ) : null}
+
+            {queuedFiles.length > 0 ? <FileQueueTable files={queuedFiles} /> : null}
+
+            <Stack
+              direction={{ xs: "column", lg: "row" }}
+              spacing={3}
+              sx={{ alignItems: "stretch" }}
+            >
+              <Paper
+                variant="outlined"
+                sx={{
+                  flex: 1.4,
+                  minWidth: 0,
+                  overflow: "hidden",
+                }}
+              >
+                <SectionHeader title="Payload Rows">
+                  <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
+                    <Chip
+                      label={`Regular ${formatHours(totalRegularHours)}`}
+                      size="small"
+                    />
+                    <Chip
+                      label={`Overtime ${formatHours(totalOvertimeHours)}`}
+                      size="small"
+                    />
+                  </Box>
+                </SectionHeader>
+                <Divider />
+                <PayloadTable rows={result.payload} />
+              </Paper>
+
+              <Paper
+                variant="outlined"
+                sx={{
+                  flex: 1,
+                  minWidth: 0,
+                  overflow: "hidden",
+                }}
+              >
+                <SectionHeader title="JSON Payload">
+                  <Tooltip title={copied ? "Copied" : "Copy JSON"}>
+                    <span>
+                      <IconButton
+                        aria-label="Copy JSON"
+                        disabled={result.payload.length === 0}
+                        onClick={copyPayload}
+                        size="small"
+                      >
+                        <CopyIcon fontSize="small" />
+                      </IconButton>
+                    </span>
+                  </Tooltip>
+                </SectionHeader>
+                <Divider />
+                <Box
+                  component="pre"
+                  sx={{
+                    m: 0,
+                    p: 2,
+                    minHeight: 360,
+                    maxHeight: 580,
+                    overflow: "auto",
+                    bgcolor: "#101820",
+                    color: "#dbeafe",
+                    fontFamily:
+                      "var(--font-geist-mono), ui-monospace, monospace",
+                    fontSize: "0.82rem",
+                    lineHeight: 1.55,
+                    whiteSpace: "pre-wrap",
+                    overflowWrap: "anywhere",
+                  }}
+                >
+                  {payloadJson}
+                </Box>
+              </Paper>
+            </Stack>
+
+            <Paper variant="outlined" sx={{ overflow: "hidden" }}>
+              <SectionHeader title="Detected Sections" />
+              <Divider />
+              <TableContainer>
+                <Table size="small" aria-label="Detected payroll sections">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Store</TableCell>
+                      <TableCell>Date Range</TableCell>
+                      <TableCell align="right">Rows</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {result.sections.map((section, index) => (
+                      <TableRow key={`${section.store_number ?? "store"}-${index}`}>
+                        <TableCell>{section.store_label ?? "-"}</TableCell>
+                        <TableCell>{section.date_range ?? "-"}</TableCell>
+                        <TableCell align="right">{section.payload.length}</TableCell>
+                      </TableRow>
+                    ))}
+                    {result.sections.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={3} sx={{ color: "text.secondary" }}>
+                          No sections loaded.
+                        </TableCell>
+                      </TableRow>
+                    ) : null}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            </Paper>
+          </Stack>
+        </Container>
+      </Box>
+    </ThemeProvider>
+  );
+}
+
+function SectionHeader({
+  title,
+  children,
+}: {
+  title: string;
+  children?: React.ReactNode;
+}) {
+  return (
+    <Stack
+      direction="row"
+      spacing={2}
+      sx={{
+        alignItems: "center",
+        justifyContent: "space-between",
+        px: 2,
+        py: 1.5,
+      }}
+    >
+      <Typography component="h2" variant="h2">
+        {title}
+      </Typography>
+      {children}
+    </Stack>
+  );
+}
+
+function ScrapePanel({
+  storeInput,
+  endDateInput,
+  hasInvalidDateRange,
+  scrapeRun,
+  scrapeStatus,
+  scrapeSummary,
+  startDateInput,
+  onEndDateInputChange,
+  onStoreInputChange,
+  onStartDateInputChange,
+  onStart,
+}: {
+  storeInput: string;
+  endDateInput: string;
+  hasInvalidDateRange: boolean;
+  scrapeRun: PayrollScrapeRun | null;
+  scrapeStatus: ScrapeUiStatus;
+  scrapeSummary: {
+    done: number;
+    failed: number;
+    rows: number;
+    sections: number;
+    total: number;
+  };
+  startDateInput: string;
+  onEndDateInputChange: (value: string) => void;
+  onStoreInputChange: (value: string) => void;
+  onStartDateInputChange: (value: string) => void;
+  onStart: () => void;
+}) {
+  return (
+    <Paper variant="outlined" sx={{ overflow: "hidden" }}>
+      <SectionHeader title="Site Scraper">
+        <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
+          <Chip label={`${scrapeSummary.total} stores`} size="small" />
+          <Chip label={`${scrapeSummary.rows} rows`} size="small" />
+          <Chip label={`${scrapeSummary.sections} section(s)`} size="small" />
+        </Box>
+      </SectionHeader>
+      <Divider />
+      <Box sx={{ p: { xs: 2, md: 3 } }}>
+        <Stack
+          direction={{ xs: "column", md: "row" }}
+          spacing={2}
+          sx={{ alignItems: { xs: "stretch", md: "flex-start" } }}
+        >
+          <TextField
+            label="Store Numbers"
+            helperText="Leave blank to use the server STORE_NUMBERS list."
+            multiline
+            minRows={3}
+            onChange={(event) => onStoreInputChange(event.target.value)}
+            placeholder="2006, 2016, 2017"
+            sx={{ flex: 1 }}
+            value={storeInput}
+          />
+          <Stack
+            direction={{ xs: "column", sm: "row", md: "column", lg: "row" }}
+            spacing={1.5}
+            sx={{ minWidth: { md: 260, lg: 380 } }}
+          >
+            <TextField
+              error={hasInvalidDateRange}
+              label="Start Date"
+              onChange={(event) => onStartDateInputChange(event.target.value)}
+              required
+              slotProps={{
+                htmlInput: {
+                  max: endDateInput || undefined,
+                },
+                inputLabel: {
+                  shrink: true,
+                },
+              }}
+              type="date"
+              value={startDateInput}
+            />
+            <TextField
+              error={hasInvalidDateRange}
+              helperText={hasInvalidDateRange ? "End date is before start date." : " "}
+              label="End Date"
+              onChange={(event) => onEndDateInputChange(event.target.value)}
+              required
+              slotProps={{
+                htmlInput: {
+                  min: startDateInput || undefined,
+                },
+                inputLabel: {
+                  shrink: true,
+                },
+              }}
+              type="date"
+              value={endDateInput}
+            />
+          </Stack>
+          <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
+            <Button
+              color="secondary"
+              disabled={
+                scrapeStatus === "running" ||
+                !startDateInput ||
+                !endDateInput ||
+                hasInvalidDateRange
+              }
+              onClick={onStart}
+              startIcon={<ScrapeIcon />}
+              variant="contained"
+            >
+              {scrapeStatus === "running" ? "Scraping" : "Start Scrape"}
+            </Button>
+          </Box>
+        </Stack>
+      </Box>
+      {scrapeStatus === "running" ? <LinearProgress /> : null}
+      {scrapeRun ? (
+        <>
+          <Divider />
+          <Box sx={{ p: 2 }}>
+            <Stack
+              direction={{ xs: "column", md: "row" }}
+              spacing={1.5}
+              sx={{
+                alignItems: { xs: "flex-start", md: "center" },
+                justifyContent: "space-between",
+              }}
+            >
+              <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
+                <Chip label={`Run ${scrapeRun.run_id}`} />
+                <Chip label={`${scrapeSummary.done} done`} color="success" />
+                <Chip label={`${scrapeSummary.failed} failed`} color="warning" />
+              </Box>
+              <Chip
+                color={
+                  scrapeRun.status === "completed_with_errors"
+                    ? "warning"
+                    : "success"
+                }
+                icon={
+                  scrapeRun.status === "completed_with_errors" ? (
+                    <WarningIcon />
+                  ) : (
+                    <CheckCircleIcon />
+                  )
+                }
+                label={
+                  scrapeRun.status === "completed_with_errors"
+                    ? "Completed with errors"
+                    : "Scrape complete"
+                }
+                variant="outlined"
+              />
+            </Stack>
+          </Box>
+          <ScrapeStoreTable stores={scrapeRun.store_results} />
+        </>
+      ) : null}
+    </Paper>
+  );
+}
+
+function ScrapeStoreTable({ stores }: { stores: PayrollScrapeStoreResult[] }) {
+  return (
+    <TableContainer sx={{ maxHeight: 300 }}>
+      <Table stickyHeader size="small" aria-label="Store scrape queue">
+        <TableHead>
+          <TableRow>
+            <TableCell>Store</TableCell>
+            <TableCell>Status</TableCell>
+            <TableCell align="right">Rows</TableCell>
+            <TableCell align="right">Sections</TableCell>
+            <TableCell>Notes</TableCell>
+          </TableRow>
+        </TableHead>
+        <TableBody>
+          {stores.map((store) => (
+            <TableRow key={store.store_number}>
+              <TableCell>{store.store_number}</TableCell>
+              <TableCell>
+                <Chip
+                  color={getScrapeStatusColor(store.status)}
+                  label={getScrapeStatusLabel(store.status)}
+                  size="small"
+                  variant={store.status === "done" ? "outlined" : "filled"}
+                />
+              </TableCell>
+              <TableCell align="right">{store.rows}</TableCell>
+              <TableCell align="right">{store.sections}</TableCell>
+              <TableCell sx={{ color: "text.secondary" }}>
+                {getScrapeStoreNote(store)}
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </TableContainer>
+  );
+}
+
+function FileQueueTable({ files }: { files: PayrollQueuedFile[] }) {
+  return (
+    <Paper variant="outlined" sx={{ overflow: "hidden" }}>
+      <SectionHeader title="File Queue" />
+      <Divider />
+      <TableContainer sx={{ maxHeight: 320 }}>
+        <Table stickyHeader size="small" aria-label="HTML file parse queue">
+          <TableHead>
+            <TableRow>
+              <TableCell>File</TableCell>
+              <TableCell>Size</TableCell>
+              <TableCell>Status</TableCell>
+              <TableCell align="right">Rows</TableCell>
+              <TableCell align="right">Sections</TableCell>
+              <TableCell>Notes</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {files.map((file) => (
+              <TableRow key={file.id}>
+                <TableCell>{file.name}</TableCell>
+                <TableCell>{formatFileSize(file.size)}</TableCell>
+                <TableCell>
+                  <Chip
+                    color={getStatusColor(file.status)}
+                    label={getStatusLabel(file.status)}
+                    size="small"
+                    variant={file.status === "done" ? "outlined" : "filled"}
+                  />
+                </TableCell>
+                <TableCell align="right">{file.result?.payload.length ?? 0}</TableCell>
+                <TableCell align="right">{file.result?.sections.length ?? 0}</TableCell>
+                <TableCell sx={{ color: "text.secondary" }}>
+                  {getQueueNote(file)}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </TableContainer>
+    </Paper>
+  );
+}
+
+function DropzonePanel({
+  dropzone,
+  stagedFiles,
+  dropErrors,
+  onProceed,
+  onRemove,
+  onClear,
+}: {
+  dropzone: ReturnType<typeof useDropzone>;
+  stagedFiles: StagedPayrollFile[];
+  dropErrors: string[];
+  onProceed: () => void;
+  onRemove: (fileId: string) => void;
+  onClear: () => void;
+}) {
+  const rootProps = dropzone.getRootProps();
+  const inputProps = dropzone.getInputProps();
+
+  return (
+    <Paper variant="outlined" sx={{ overflow: "hidden" }}>
+      <Box
+        {...rootProps}
+        sx={{
+          p: { xs: 2, md: 3 },
+          border: "2px dashed",
+          borderColor: dropzone.isDragActive ? "primary.main" : "divider",
+          bgcolor: dropzone.isDragActive ? "rgba(20, 83, 45, 0.06)" : "white",
+          cursor: "default",
+        }}
+      >
+        <input {...inputProps} />
+        <Stack
+          direction={{ xs: "column", md: "row" }}
+          spacing={2}
+          sx={{
+            alignItems: { xs: "stretch", md: "center" },
+            justifyContent: "space-between",
+          }}
+        >
+          <Box>
+            <Typography component="h2" variant="h2">
+              Drop HTML Files
+            </Typography>
+            <Typography color="text.secondary" sx={{ mt: 0.5 }}>
+              Add files here first. Parsing starts only after you confirm the
+              selection.
+            </Typography>
+          </Box>
+          <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
+            <Button
+              variant="outlined"
+              startIcon={<UploadIcon />}
+              onClick={dropzone.open}
+            >
+              Select Files
+            </Button>
+            <Button
+              variant="contained"
+              color="secondary"
+              startIcon={<QueueIcon />}
+              disabled={stagedFiles.length === 0}
+              onClick={onProceed}
+            >
+              Proceed
+            </Button>
+            <Button
+              variant="text"
+              startIcon={<ClearIcon />}
+              disabled={stagedFiles.length === 0}
+              onClick={onClear}
+            >
+              Clear Selected Files
+            </Button>
+          </Box>
+        </Stack>
+      </Box>
+
+      {dropErrors.map((error) => (
+        <Alert key={error} severity="warning" icon={<WarningIcon />}>
+          {error}
+        </Alert>
+      ))}
+
+      {stagedFiles.length > 0 ? (
+        <>
+          <Divider />
+          <TableContainer sx={{ maxHeight: 240 }}>
+            <Table stickyHeader size="small" aria-label="Selected HTML files">
+              <TableHead>
+                <TableRow>
+                  <TableCell>Selected File</TableCell>
+                  <TableCell>Size</TableCell>
+                  <TableCell align="right">Action</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {stagedFiles.map((file) => (
+                  <TableRow key={file.id}>
+                    <TableCell>{file.name}</TableCell>
+                    <TableCell>{formatFileSize(file.size)}</TableCell>
+                    <TableCell align="right">
+                      <Button size="small" onClick={() => onRemove(file.id)}>
+                        Remove
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </>
+      ) : null}
+    </Paper>
+  );
+}
+
+function PayloadTable({ rows }: { rows: PayrollPayload[] }) {
+  return (
+    <TableContainer sx={{ maxHeight: 580 }}>
+      <Table stickyHeader size="small" aria-label="Payroll payload rows">
+        <TableHead>
+          <TableRow>
+            <TableCell>Employee ID</TableCell>
+            <TableCell>Employee Number</TableCell>
+            <TableCell>Store Number</TableCell>
+            <TableCell align="right">Regular Hours</TableCell>
+            <TableCell align="right">Overtime Hours</TableCell>
+          </TableRow>
+        </TableHead>
+        <TableBody>
+          {rows.map((row, index) => (
+            <TableRow key={`${row.employee_id ?? "employee"}-${index}`}>
+              <TableCell>{formatNullable(row.employee_id)}</TableCell>
+              <TableCell>{formatNullable(row.employee_number)}</TableCell>
+              <TableCell>{formatNullable(row.store_number)}</TableCell>
+              <TableCell align="right">{formatNullable(row.regular_hours)}</TableCell>
+              <TableCell align="right">{formatNullable(row.overtime_hours)}</TableCell>
+            </TableRow>
+          ))}
+          {rows.length === 0 ? (
+            <TableRow>
+              <TableCell colSpan={5} sx={{ color: "text.secondary" }}>
+                No payload rows loaded.
+              </TableCell>
+            </TableRow>
+          ) : null}
+        </TableBody>
+      </Table>
+    </TableContainer>
+  );
+}
+
+function sumHours(rows: PayrollPayload[], key: "regular_hours" | "overtime_hours") {
+  return rows.reduce((total, row) => total + (row[key] ?? 0), 0);
+}
+
+function formatNullable(value: number | null) {
+  return value === null ? "-" : value.toString();
+}
+
+function formatHours(value: number) {
+  return value.toLocaleString(undefined, {
+    maximumFractionDigits: 2,
+    minimumFractionDigits: 0,
+  });
+}
+
+function formatFileSize(size: number) {
+  if (size < 1024) {
+    return `${size} B`;
+  }
+
+  if (size < 1024 * 1024) {
+    return `${(size / 1024).toFixed(1)} KB`;
+  }
+
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function buildDownloadName(
+  files: PayrollQueuedFile[],
+  scrapeRun: PayrollScrapeRun | null,
+) {
+  if (files.length === 0 && scrapeRun) {
+    return `${scrapeRun.run_id}.payload.json`;
+  }
+
+  if (files.length === 1 && !scrapeRun) {
+    return `${files[0].name.replace(/\.[^.]+$/, "")}.payload.json`;
+  }
+
+  const sourceCount = files.length + (scrapeRun ? scrapeRun.store_results.length : 0);
+
+  return `combined-payroll-payload-${sourceCount}-sources.json`;
+}
+
+async function readApiError(response: Response) {
+  try {
+    const body = (await response.json()) as { error?: unknown };
+
+    if (typeof body.error === "string" && body.error.trim()) {
+      return body.error;
+    }
+  } catch {
+    return `Request failed with ${response.status}.`;
+  }
+
+  return `Request failed with ${response.status}.`;
+}
+
+function pauseForUi() {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, 0);
+  });
+}
+
+function formatFileRejections(rejections: FileRejection[]) {
+  return rejections.map((rejection) => {
+    const reasons = rejection.errors.map((error) => error.message).join(", ");
+
+    return `${rejection.file.name}: ${reasons}`;
+  });
+}
+
+function getStatusLabel(status: QueueStatus) {
+  switch (status) {
+    case "queued":
+      return "Queued";
+    case "parsing":
+      return "Parsing";
+    case "done":
+      return "Done";
+    case "error":
+      return "Error";
+  }
+}
+
+function getStatusColor(
+  status: QueueStatus,
+): "default" | "primary" | "success" | "error" {
+  switch (status) {
+    case "queued":
+      return "default";
+    case "parsing":
+      return "primary";
+    case "done":
+      return "success";
+    case "error":
+      return "error";
+  }
+}
+
+function getQueueNote(file: PayrollQueuedFile) {
+  if (file.error) {
+    return file.error;
+  }
+
+  if (file.status === "queued") {
+    return "Waiting to parse";
+  }
+
+  if (file.status === "parsing") {
+    return "Reading HTML";
+  }
+
+  if ((file.result?.warnings.length ?? 0) > 0) {
+    return file.result?.warnings.join(" ");
+  }
+
+  if (file.result?.payload.length === 0) {
+    return "No payroll rows found";
+  }
+
+  return "Parsed";
+}
+
+function getScrapeStatusLabel(status: PayrollScrapeStoreResult["status"]) {
+  switch (status) {
+    case "queued":
+      return "Queued";
+    case "scraping":
+      return "Scraping";
+    case "parsing":
+      return "Parsing";
+    case "done":
+      return "Done";
+    case "error":
+      return "Error";
+  }
+}
+
+function getScrapeStatusColor(
+  status: PayrollScrapeStoreResult["status"],
+): "default" | "primary" | "success" | "error" | "warning" {
+  switch (status) {
+    case "queued":
+      return "default";
+    case "scraping":
+    case "parsing":
+      return "primary";
+    case "done":
+      return "success";
+    case "error":
+      return "error";
+  }
+}
+
+function getScrapeStoreNote(store: PayrollScrapeStoreResult) {
+  if (store.error) {
+    return store.error;
+  }
+
+  if (store.warnings.length > 0) {
+    return store.warnings.join(" ");
+  }
+
+  if (store.rows === 0) {
+    return "No payroll rows found";
+  }
+
+  return "Parsed immediately after scrape";
+}
+
+function UploadIcon(props: SvgIconProps) {
+  return (
+    <SvgIcon {...props}>
+      <path d="M11 16h2V7.83l3.59 3.58L18 10l-6-6-6 6 1.41 1.41L11 7.83V16Z" />
+      <path d="M5 18h14v2H5v-2Z" />
+    </SvgIcon>
+  );
+}
+
+function SaveIcon(props: SvgIconProps) {
+  return (
+    <SvgIcon {...props}>
+      <path d="M17 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4ZM12 19a3 3 0 1 1 0-6 3 3 0 0 1 0 6ZM6 5h9v4H6V5Z" />
+    </SvgIcon>
+  );
+}
+
+function ScrapeIcon(props: SvgIconProps) {
+  return (
+    <SvgIcon {...props}>
+      <path d="M9.5 3a6.5 6.5 0 0 1 5.17 10.44l5.45 5.44-1.41 1.41-5.45-5.44A6.5 6.5 0 1 1 9.5 3Zm0 2a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9Z" />
+      <path d="M8 8h3v2H8V8Z" />
+    </SvgIcon>
+  );
+}
+
+function DownloadIcon(props: SvgIconProps) {
+  return (
+    <SvgIcon {...props}>
+      <path d="M11 4h2v8.17l3.59-3.58L18 10l-6 6-6-6 1.41-1.41L11 12.17V4Z" />
+      <path d="M5 18h14v2H5v-2Z" />
+    </SvgIcon>
+  );
+}
+
+function CopyIcon(props: SvgIconProps) {
+  return (
+    <SvgIcon {...props}>
+      <path d="M16 1H4c-1.1 0-2 .9-2 2v12h2V3h12V1Z" />
+      <path d="M8 5h12c1.1 0 2 .9 2 2v14c0 1.1-.9 2-2 2H8c-1.1 0-2-.9-2-2V7c0-1.1.9-2 2-2Zm0 2v14h12V7H8Z" />
+    </SvgIcon>
+  );
+}
+
+function CheckCircleIcon(props: SvgIconProps) {
+  return (
+    <SvgIcon {...props}>
+      <path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm-1.1 14.1-4-4 1.4-1.4 2.6 2.6 5.8-5.8 1.4 1.4-7.2 7.2Z" />
+    </SvgIcon>
+  );
+}
+
+function WarningIcon(props: SvgIconProps) {
+  return (
+    <SvgIcon {...props}>
+      <path d="M1 21h22L12 2 1 21Zm12-3h-2v-2h2v2Zm0-4h-2v-4h2v4Z" />
+    </SvgIcon>
+  );
+}
+
+function QueueIcon(props: SvgIconProps) {
+  return (
+    <SvgIcon {...props}>
+      <path d="M4 5h16v2H4V5Zm0 6h16v2H4v-2Zm0 6h10v2H4v-2Zm13.5-.5L20 19l-2.5 2.5-1.4-1.4 1.1-1.1-1.1-1.1 1.4-1.4Z" />
+    </SvgIcon>
+  );
+}
+
+function ClearIcon(props: SvgIconProps) {
+  return (
+    <SvgIcon {...props}>
+      <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12ZM8 9h8v10H8V9Zm7.5-5-1-1h-5l-1 1H5v2h14V4h-3.5Z" />
+    </SvgIcon>
+  );
+}

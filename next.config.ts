@@ -1,7 +1,13 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  outputFileTracingIncludes: {
+    "/api/scrape-runs": [
+      "./node_modules/playwright/**/*",
+      "./node_modules/playwright-core/**/*",
+    ],
+  },
+  serverExternalPackages: ["playwright", "playwright-core"],
 };
 
 export default nextConfig;

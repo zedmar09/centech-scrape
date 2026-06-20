@@ -1,13 +1,8 @@
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --background: #f4f6f8;
+  --foreground: #18202a;
+  --font-geist-sans: Arial, Helvetica, sans-serif;
+  --font-geist-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 }
 
 html {
@@ -42,8 +37,9 @@ a {
   text-decoration: none;
 }
 
-@media (prefers-color-scheme: dark) {
-  html {
-    color-scheme: dark;
-  }
+button,
+input,
+textarea,
+select {
+  font: inherit;
 }
