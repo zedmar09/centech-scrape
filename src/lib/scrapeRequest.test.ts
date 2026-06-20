@@ -23,7 +23,7 @@ describe("parseStoreNumbersInput", () => {
 });
 
 describe("createScrapeRunRequestBody", () => {
-  it("sends only the selected pay-period dates", () => {
+  it("sends the selected pay-period dates", () => {
     expect(
       createScrapeRunRequestBody({
         endDate: "2026-06-15",
@@ -32,6 +32,20 @@ describe("createScrapeRunRequestBody", () => {
     ).toEqual({
       end_date: "2026-06-15",
       start_date: "2026-06-01",
+    });
+  });
+
+  it("can target a specific store batch", () => {
+    expect(
+      createScrapeRunRequestBody({
+        endDate: "2026-06-15",
+        startDate: "2026-06-01",
+        stores: ["2006"],
+      }),
+    ).toEqual({
+      end_date: "2026-06-15",
+      start_date: "2026-06-01",
+      stores: ["2006"],
     });
   });
 });

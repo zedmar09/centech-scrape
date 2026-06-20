@@ -3,15 +3,18 @@ const STORE_NUMBER_PATTERN = /^\d+$/;
 export type ScrapeRunRequestDates = {
   endDate: string;
   startDate: string;
+  stores?: string[];
 };
 
 export function createScrapeRunRequestBody({
   endDate,
   startDate,
+  stores,
 }: ScrapeRunRequestDates) {
   return {
     end_date: endDate,
     start_date: startDate,
+    ...(stores && stores.length > 0 ? { stores } : {}),
   };
 }
 

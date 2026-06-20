@@ -35,6 +35,11 @@ npm run dev
 Open [http://localhost:3000](http://localhost:3000). Select the start and end
 date, then start the scrape. Stores come from `STORE_NUMBERS`.
 
+The UI runs the configured store list as a client-driven queue. It starts two
+one-store scrape requests at a time, waits for both to finish, merges their
+payload rows, updates the progress bar, and continues with the next two stores
+until every store is done or marked as failed.
+
 ## Vercel Staging Setup
 
 1. Run `npm install` locally so `package-lock.json` includes the
@@ -49,9 +54,9 @@ date, then start the scrape. Stores come from `STORE_NUMBERS`.
    `STORE_NUMBERS=2006,2016`.
 7. After the short run works, restore the full 87-store list.
 
-The current route is synchronous and sets `maxDuration` to 300 seconds. If the
-full 87-store scrape exceeds that in staging, move the scrape to chunked jobs or
-a durable worker and keep this UI as the launcher/review screen.
+Each API call scrapes one store. The browser tab owns the queue, so keep the tab
+open until the progress reaches 100%. If you need the scrape to continue after
+closing the tab, move the queue to a durable worker with persistent run state.
 
 ## Save Payload
 

@@ -22,6 +22,19 @@ type StartScrapeRequest = {
   start_date?: unknown;
 };
 
+export async function GET() {
+  const scraperConfig = createPayrollScraperConfig();
+  const stores =
+    scraperConfig.source === "flexepos"
+      ? createFlexeposPayrollConfig(process.env).stores
+      : [];
+
+  return NextResponse.json({
+    batch_size: 2,
+    store_numbers: stores,
+  });
+}
+
 export async function POST(request: NextRequest) {
   let body: StartScrapeRequest;
 

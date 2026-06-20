@@ -31,8 +31,21 @@ import {
 } from "@mui/material";
 
 import type { PayrollParseResult, PayrollPayload } from "@/lib/payrollParser";
+import {
+  DEFAULT_SCRAPE_BATCH_SIZE,
+  chunkStoreNumbers,
+  createFailedScrapeRun,
+  createQueuedScrapeRun,
+  getScrapeProgress,
+  markStoresScraping,
+  mergeScrapeRunBatch,
+  type ScrapeProgress,
+} from "@/lib/scrapeBatching";
 import type { PayrollScrapeRun, PayrollScrapeStoreResult } from "@/lib/scrapeRuns";
-import { createScrapeRunRequestBody } from "@/lib/scrapeRequest";
+import {
+  createScrapeRunRequestBody,
+  parseStoreNumbersInput,
+} from "@/lib/scrapeRequest";
 
 const theme = createTheme({
   palette: {
@@ -93,6 +106,18 @@ const EMPTY_PAYROLL_RESULT: PayrollParseResult = {
   warnings: [],
 };
 
+const EMPTY_SCRAPE_PROGRESS: ScrapeProgress = {
+  completed: 0,
+  failed: 0,
+  percent: 0,
+  total: 0,
+};
+
+type ScrapeConfigResponse = {
+  batch_size?: unknown;
+  store_numbers?: unknown;
+};
+
 export function PayrollImporter() {
   const [startDateInput, setStartDateInput] = useState("");
   const [endDateInput, setEndDateInput] = useState("");
@@ -133,6 +158,10 @@ export function PayrollImporter() {
     };
   }, [scrapeRun]);
 
+  const scrapeProgress = useMemo(() => {
+    return scrapeRun ? getScrapeProgress(scrapeRun) : EMPTY_SCRAPE_PROGRESS;
+  }, [scrapeRun]);
+
   const hasInvalidScrapeDateRange = Boolean(
     startDateInput && endDateInput && startDateInput > endDateInput,
   );
@@ -164,6 +193,81 @@ export function PayrollImporter() {
     URL.revokeObjectURL(url);
   }
 
+  async function fetchScrapeConfig() {
+    const response = await fetch("/api/scrape-runs", {
+      method: "GET",
+    });
+
+    if (!response.ok) {
+      throw new Error(await readApiError(response));
+    }
+
+    const body = (await response.json()) as ScrapeConfigResponse;
+    const stores = parseStoreNumbersInput(body.store_numbers);
+    const rawBatchSize =
+      typeof body.batch_size === "number" && Number.isFinite(body.batch_size)
+        ? body.batch_size
+        : DEFAULT_SCRAPE_BATCH_SIZE;
+    const batchSize = Math.min(
+      DEFAULT_SCRAPE_BATCH_SIZE,
+      Math.max(1, Math.floor(rawBatchSize)),
+    );
+
+    if (stores.length === 0) {
+      throw new Error("No store numbers are configured for this scrape.");
+    }
+
+    return {
+      batchSize,
+      stores,
+    };
+  }
+
+  async function scrapeSingleStore(
+    storeNumber: string,
+    {
+      endDate,
+      startedAt,
+      startDate,
+    }: {
+      endDate: string;
+      startedAt: string;
+      startDate: string;
+    },
+  ) {
+    try {
+      const response = await fetch("/api/scrape-runs", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(
+          createScrapeRunRequestBody({
+            endDate,
+            startDate,
+            stores: [storeNumber],
+          }),
+        ),
+      });
+
+      if (!response.ok) {
+        throw new Error(await readApiError(response));
+      }
+
+      return (await response.json()) as PayrollScrapeRun;
+    } catch (caught) {
+      return createFailedScrapeRun({
+        error:
+          caught instanceof Error
+            ? caught.message
+            : "Unable to scrape this store.",
+        finishedAt: new Date().toISOString(),
+        startedAt,
+        stores: [storeNumber],
+      });
+    }
+  }
+
   async function startScrapeRun() {
     setScrapeStatus("running");
     setScrapeError(null);
@@ -173,26 +277,36 @@ export function PayrollImporter() {
     setCopied(false);
 
     try {
-      const response = await fetch("/api/scrape-runs", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-        },
-        body: JSON.stringify(
-          createScrapeRunRequestBody({
-            endDate: endDateInput,
-            startDate: startDateInput,
-          }),
-        ),
+      const { batchSize, stores } = await fetchScrapeConfig();
+      const startedAt = new Date().toISOString();
+      let workingRun = createQueuedScrapeRun({
+        runId: createClientRunId(),
+        startedAt,
+        stores,
       });
 
-      if (!response.ok) {
-        throw new Error(await readApiError(response));
+      setScrapeRun(workingRun);
+
+      for (const batch of chunkStoreNumbers(stores, batchSize)) {
+        workingRun = markStoresScraping(workingRun, batch);
+        setScrapeRun(workingRun);
+
+        const batchRuns = await Promise.all(
+          batch.map((storeNumber) =>
+            scrapeSingleStore(storeNumber, {
+              endDate: endDateInput,
+              startDate: startDateInput,
+              startedAt,
+            }),
+          ),
+        );
+
+        workingRun = mergeScrapeRunBatch(workingRun, batchRuns, {
+          finishedAt: new Date().toISOString(),
+        });
+        setScrapeRun(workingRun);
       }
 
-      const run = (await response.json()) as PayrollScrapeRun;
-
-      setScrapeRun(run);
       setScrapeStatus("complete");
     } catch (caught) {
       setScrapeStatus("error");
@@ -296,6 +410,7 @@ export function PayrollImporter() {
               endDateInput={endDateInput}
               hasInvalidDateRange={hasInvalidScrapeDateRange}
               scrapeRun={scrapeRun}
+              scrapeProgress={scrapeProgress}
               scrapeStatus={scrapeStatus}
               scrapeSummary={scrapeSummary}
               startDateInput={startDateInput}
@@ -476,6 +591,7 @@ function ScrapePanel({
   endDateInput,
   hasInvalidDateRange,
   scrapeRun,
+  scrapeProgress,
   scrapeStatus,
   scrapeSummary,
   startDateInput,
@@ -486,6 +602,7 @@ function ScrapePanel({
   endDateInput: string;
   hasInvalidDateRange: boolean;
   scrapeRun: PayrollScrapeRun | null;
+  scrapeProgress: ScrapeProgress;
   scrapeStatus: ScrapeUiStatus;
   scrapeSummary: {
     done: number;
@@ -504,6 +621,7 @@ function ScrapePanel({
       <SectionHeader title="Site Scraper">
         <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
           <Chip label={`${scrapeSummary.total} stores`} size="small" />
+          <Chip label={`${scrapeProgress.percent}% complete`} size="small" />
           <Chip label={`${scrapeSummary.rows} rows`} size="small" />
           <Chip label={`${scrapeSummary.sections} section(s)`} size="small" />
         </Box>
@@ -574,7 +692,22 @@ function ScrapePanel({
           </Box>
         </Stack>
       </Box>
-      {scrapeStatus === "running" ? <LinearProgress /> : null}
+      {scrapeStatus === "running" ? (
+        <Box>
+          <LinearProgress
+            value={scrapeProgress.percent}
+            variant={scrapeProgress.total > 0 ? "determinate" : "indeterminate"}
+          />
+          {scrapeProgress.total > 0 ? (
+            <Box sx={{ px: 2, py: 1, color: "text.secondary" }}>
+              <Typography variant="body2">
+                {scrapeProgress.completed} of {scrapeProgress.total} stores
+                completed
+              </Typography>
+            </Box>
+          ) : null}
+        </Box>
+      ) : null}
       {scrapeRun ? (
         <>
           <Divider />
@@ -589,6 +722,9 @@ function ScrapePanel({
             >
               <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
                 <Chip label={`Run ${scrapeRun.run_id}`} />
+                <Chip
+                  label={`${scrapeProgress.completed}/${scrapeProgress.total} complete`}
+                />
                 <Chip label={`${scrapeSummary.done} done`} color="success" />
                 <Chip label={`${scrapeSummary.failed} failed`} color="warning" />
               </Box>
@@ -596,11 +732,15 @@ function ScrapePanel({
                 color={
                   scrapeRun.status === "completed_with_errors"
                     ? "warning"
-                    : "success"
+                    : scrapeRun.status === "running"
+                      ? "primary"
+                      : "success"
                 }
                 icon={
                   scrapeRun.status === "completed_with_errors" ? (
                     <WarningIcon />
+                  ) : scrapeRun.status === "running" ? (
+                    <ScrapeIcon />
                   ) : (
                     <CheckCircleIcon />
                   )
@@ -608,6 +748,8 @@ function ScrapePanel({
                 label={
                   scrapeRun.status === "completed_with_errors"
                     ? "Completed with errors"
+                    : scrapeRun.status === "running"
+                      ? "Scrape running"
                     : "Scrape complete"
                 }
                 variant="outlined"
@@ -791,6 +933,13 @@ function formatHours(value: number) {
 
 function formatCharacterCount(value: number) {
   return `${value.toLocaleString()} chars`;
+}
+
+function createClientRunId() {
+  const suffix =
+    globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2);
+
+  return `scrape_${suffix}`;
 }
 
 async function readApiError(response: Response) {

@@ -16,7 +16,7 @@ export type PayrollScrapeStoreResult = {
   error?: string;
 };
 
-export type PayrollScrapeRunStatus = "done" | "completed_with_errors";
+export type PayrollScrapeRunStatus = "running" | "done" | "completed_with_errors";
 
 export type PayrollScrapeRun = {
   run_id: string;
