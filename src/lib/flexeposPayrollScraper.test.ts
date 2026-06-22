@@ -93,6 +93,18 @@ describe("flexeposPayrollScraper config", () => {
     expect(createFlexeposPayrollConfig({}).selectors.payrollTable).toBe("table");
   });
 
+  it("configures the tip breakdown report target without payroll overtime", () => {
+    const config = createFlexeposPayrollConfig(
+      {},
+      { reportType: "tip-breakdown-report" },
+    );
+
+    expect(config.reportType).toBe("tip-breakdown-report");
+    expect(config.reportLinkText).toBe("Tip Breakdown Report");
+    expect(config.includeOvertime).toBe(false);
+    expect(config.submitWaitAfterMs).toBe(3000);
+  });
+
   it("requires a remote browser endpoint on Vercel", async () => {
     const config = createFlexeposPayrollConfig(
       {

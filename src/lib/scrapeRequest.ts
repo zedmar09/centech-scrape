@@ -1,21 +1,33 @@
+import {
+  type FlexeposReportType,
+  parseFlexeposReportType,
+} from "./reportTypes";
+
 const STORE_NUMBER_PATTERN = /^\d+$/;
 
 export type ScrapeRunRequestDates = {
   endDate: string;
+  reportType?: FlexeposReportType;
   startDate: string;
   stores?: string[];
 };
 
 export function createScrapeRunRequestBody({
   endDate,
+  reportType,
   startDate,
   stores,
 }: ScrapeRunRequestDates) {
   return {
     end_date: endDate,
+    ...(reportType ? { report_type: reportType } : {}),
     start_date: startDate,
     ...(stores && stores.length > 0 ? { stores } : {}),
   };
+}
+
+export function parseReportTypeInput(value: unknown): FlexeposReportType {
+  return parseFlexeposReportType(value);
 }
 
 export function parseStoreNumbersInput(value: unknown): string[] {

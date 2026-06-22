@@ -1,9 +1,9 @@
-# Payroll Payload Builder
+# Flexepos Payload Builder
 
-Next.js + MUI app for building payroll computation payloads from a server-side
-Flexepos scrape. The app logs in, runs each configured store payroll report,
-parses the HTML immediately, combines the rows, and shows the raw scraped HTML
-for inspection without saving it.
+Next.js + MUI app for building computation payloads from a server-side Flexepos
+scrape. The app logs in, runs each configured store report, parses the HTML
+immediately, combines the rows, and shows the raw scraped HTML for inspection
+without saving it.
 
 ## Getting Started
 
@@ -32,13 +32,34 @@ Run the app:
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000). Select the start and end
-date, then start the scrape. Stores come from `STORE_NUMBERS`.
+Open [http://localhost:3000](http://localhost:3000). Select Payroll or Tip
+Breakdown Report, choose the start and end date, then start the scrape. Stores
+come from `STORE_NUMBERS`.
 
 The UI runs the configured store list as a client-driven queue. It starts two
 one-store scrape requests at a time, waits for both to finish, merges their
 payload rows, updates the progress bar, and continues with the next two stores
 until every store is done or marked as failed.
+
+Supported report payloads:
+
+```json
+{
+  "employee_id": null,
+  "employee_number": null,
+  "store_number": null,
+  "regular_hours": null,
+  "overtime_hours": null
+}
+```
+
+```json
+{
+  "store_number": "",
+  "total_payins": 0,
+  "total_tips": 0
+}
+```
 
 ## Vercel Staging Setup
 

@@ -1,11 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { PayrollPayload } from "@/lib/payrollParser";
+import type { ScrapePayload } from "@/lib/reportTypes";
+import { parseReportTypeInput } from "@/lib/scrapeRequest";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 type SavePayrollPayloadRequest = {
+  report_type?: unknown;
   run_id?: unknown;
   payload?: unknown;
 };
@@ -24,12 +26,13 @@ export async function POST(request: NextRequest) {
 
   if (!Array.isArray(body.payload)) {
     return NextResponse.json(
-      { error: "payload must be an array of payroll rows." },
+      { error: "payload must be an array of report rows." },
       { status: 400 },
     );
   }
 
-  const payload = body.payload as PayrollPayload[];
+  const payload = body.payload as ScrapePayload[];
+  const reportType = parseReportTypeInput(body.report_type);
   const runId = typeof body.run_id === "string" ? body.run_id : null;
   const saveUrl = process.env.PAYROLL_PAYLOAD_SAVE_URL;
 
@@ -38,6 +41,7 @@ export async function POST(request: NextRequest) {
       method: "POST",
       headers: createSaveHeaders(),
       body: JSON.stringify({
+        report_type: reportType,
         run_id: runId,
         payload,
       }),
@@ -56,6 +60,7 @@ export async function POST(request: NextRequest) {
   return NextResponse.json({
     saved: Boolean(saveUrl),
     accepted: true,
+    report_type: reportType,
     run_id: runId,
     rows: payload.length,
   });

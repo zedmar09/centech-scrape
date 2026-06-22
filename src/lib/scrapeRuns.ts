@@ -1,7 +1,8 @@
 import {
-  PayrollParseResult,
-  combinePayrollParseResults,
-} from "./payrollParser";
+  type FlexeposReportType,
+  type ScrapeParseResult,
+  combineScrapeParseResults,
+} from "./reportTypes";
 import { parsePayrollHtmlOnServer } from "./serverPayrollParser";
 
 export type ScrapeStoreStatus = "queued" | "scraping" | "parsing" | "done" | "error";
@@ -19,12 +20,13 @@ export type PayrollScrapeStoreResult = {
 export type PayrollScrapeRunStatus = "running" | "done" | "completed_with_errors";
 
 export type PayrollScrapeRun = {
+  report_type?: FlexeposReportType;
   run_id: string;
   status: PayrollScrapeRunStatus;
   started_at: string;
   finished_at: string;
   store_results: PayrollScrapeStoreResult[];
-  result: PayrollParseResult;
+  result: ScrapeParseResult;
 };
 
 export type RunPayrollScrapeInput = {
@@ -41,7 +43,7 @@ type StoreWorkItem = {
 };
 
 type StoreWorkResult = {
-  parseResult?: PayrollParseResult;
+  parseResult?: ScrapeParseResult;
   storeResult: PayrollScrapeStoreResult;
 };
 
@@ -89,12 +91,13 @@ export async function runPayrollScrape({
 
   const successfulResults = workResults
     .map((workResult) => workResult.parseResult)
-    .filter((result): result is PayrollParseResult => Boolean(result));
-  const combinedResult = combinePayrollParseResults(successfulResults);
+    .filter((result): result is ScrapeParseResult => Boolean(result));
+  const combinedResult = combineScrapeParseResults(successfulResults);
   const storeResults = workResults.map((workResult) => workResult.storeResult);
   const hasErrors = storeResults.some((storeResult) => storeResult.status === "error");
 
   return {
+    report_type: "payroll",
     run_id: createRunId(),
     status: hasErrors ? "completed_with_errors" : "done",
     started_at: startedAt,

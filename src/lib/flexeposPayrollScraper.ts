@@ -1,8 +1,12 @@
 import {
-  PayrollParseResult,
-  combinePayrollParseResults,
-} from "./payrollParser";
+  type FlexeposReportType,
+  type ScrapeParseResult,
+  combineScrapeParseResults,
+  getFlexeposReportTarget,
+  parseFlexeposReportType,
+} from "./reportTypes";
 import { parsePayrollHtmlOnServer } from "./serverPayrollParser";
+import { parseTipBreakdownHtmlOnServer } from "./serverTipBreakdownParser";
 import {
   PayrollScrapeRun,
   PayrollScrapeStoreResult,
@@ -105,6 +109,7 @@ export type FlexeposPayrollConfig = {
   connectMode: "cdp" | "playwright";
   endDate: string | null;
   headless: boolean;
+  includeOvertime: boolean;
   loginPath: string;
   loggedInSelector: string;
   navigationRetries: number;
@@ -112,10 +117,13 @@ export type FlexeposPayrollConfig = {
   navigationWaitUntil: LoadState;
   password: string | null;
   payrollLinkText: string;
+  reportLinkText: string;
+  reportType: FlexeposReportType;
   requiresRemoteBrowser: boolean;
   selectors: FlexeposPayrollSelectors;
   startDate: string | null;
   stores: string[];
+  submitWaitAfterMs: number;
   timeoutMs: number;
   username: string | null;
   waitAfterActionMs: number;
@@ -144,6 +152,7 @@ export type RunFlexeposPayrollScrapeInput = {
 type PayrollScraperEnv = Record<string, string | undefined>;
 type FlexeposPayrollConfigOverrides = {
   endDate?: string | null;
+  reportType?: unknown;
   startDate?: string | null;
 };
 type LoadState = "commit" | "domcontentloaded" | "load" | "networkidle";
@@ -202,7 +211,7 @@ type Locator = {
 };
 
 type FlexeposStoreWorkResult = {
-  parseResult?: PayrollParseResult;
+  parseResult?: ScrapeParseResult;
   storeResult: PayrollScrapeStoreResult;
 };
 
@@ -211,6 +220,17 @@ export function createFlexeposPayrollConfig(
   overrides: FlexeposPayrollConfigOverrides = {},
 ): FlexeposPayrollConfig {
   const configuredStores = splitStoreNumbers(env.STORE_NUMBERS);
+  const reportType = parseFlexeposReportType(overrides.reportType);
+  const reportTarget = getFlexeposReportTarget(reportType);
+  const waitAfterActionMs = readPositiveInteger(
+    env.FLEXEPOS_WAIT_AFTER_ACTION_MS,
+    1_500,
+  );
+  const reportLinkText =
+    reportType === "payroll"
+      ? env.FLEXEPOS_PAYROLL_LINK_TEXT?.trim() || reportTarget.defaultLinkText
+      : env.FLEXEPOS_TIP_BREAKDOWN_LINK_TEXT?.trim() ||
+        reportTarget.defaultLinkText;
 
   return {
     baseUrl: env.FLEXEPOS_BASE_URL?.trim() || "https://fms.flexepos.com/FlexeposWeb/",
@@ -221,6 +241,7 @@ export function createFlexeposPayrollConfig(
         : "cdp",
     endDate: normalizePayrollDateInput(overrides.endDate),
     headless: env.FLEXEPOS_HEADLESS !== "false",
+    includeOvertime: reportTarget.includeOvertime,
     loginPath: env.FLEXEPOS_LOGIN_PATH?.trim() || "home.seam",
     loggedInSelector:
       env.FLEXEPOS_LOGGED_IN_SELECTOR?.trim() || "a:has-text('Logout')",
@@ -232,6 +253,8 @@ export function createFlexeposPayrollConfig(
     navigationWaitUntil: readLoadState(env.FLEXEPOS_NAVIGATION_WAIT_UNTIL),
     password: env.FMS_PASSWORD || null,
     payrollLinkText: env.FLEXEPOS_PAYROLL_LINK_TEXT?.trim() || "Payroll",
+    reportLinkText,
+    reportType,
     requiresRemoteBrowser: env.VERCEL === "1" || env.VERCEL === "true",
     selectors: {
       username: env.FLEXEPOS_USERNAME_SELECTOR?.trim() || "#login\\:username",
@@ -259,9 +282,16 @@ export function createFlexeposPayrollConfig(
     stores: normalizeStoreNumbers(
       configuredStores.length > 0 ? configuredStores : DEFAULT_FLEXEPOS_STORE_NUMBERS,
     ),
+    submitWaitAfterMs: readPositiveInteger(
+      reportType === "tip-breakdown-report"
+        ? env.FLEXEPOS_TIP_BREAKDOWN_SUBMIT_WAIT_AFTER_MS ??
+            env.FLEXEPOS_SUBMIT_WAIT_AFTER_MS
+        : env.FLEXEPOS_SUBMIT_WAIT_AFTER_MS,
+      reportTarget.submitWaitAfterMs ?? waitAfterActionMs,
+    ),
     timeoutMs: readPositiveInteger(env.FLEXEPOS_TIMEOUT_MS, 30_000),
     username: env.FMS_USERNAME?.trim() || null,
-    waitAfterActionMs: readPositiveInteger(env.FLEXEPOS_WAIT_AFTER_ACTION_MS, 1_500),
+    waitAfterActionMs,
     waitBeforeActionMs: readPositiveInteger(
       env.FLEXEPOS_WAIT_BEFORE_ACTION_MS,
       500,
@@ -304,12 +334,12 @@ export async function runFlexeposPayrollScrape({
     page.setDefaultNavigationTimeout(config.navigationTimeoutMs);
 
     await ensureAuthenticated(page, config);
-    const payrollUrl = await findPayrollUrl(page, config);
+    const reportUrl = await findReportUrl(page, config);
     const storeResults: PayrollScrapeStoreResult[] = [];
-    const parseResults: PayrollParseResult[] = [];
+    const parseResults: ScrapeParseResult[] = [];
 
     for (const storeNumber of selectedStores) {
-      const storeRun = await scrapeFlexeposStore(page, config, payrollUrl, storeNumber);
+      const storeRun = await scrapeFlexeposStore(page, config, reportUrl, storeNumber);
       storeResults.push(storeRun.storeResult);
 
       if (storeRun.parseResult) {
@@ -320,12 +350,13 @@ export async function runFlexeposPayrollScrape({
     const hasErrors = storeResults.some((storeResult) => storeResult.status === "error");
 
     return {
+      report_type: config.reportType,
       run_id: createRunId(),
       status: hasErrors ? "completed_with_errors" : "done",
       started_at: startedAt,
       finished_at: now().toISOString(),
       store_results: storeResults,
-      result: combinePayrollParseResults(parseResults),
+      result: combineScrapeParseResults(parseResults),
     };
   } finally {
     await browser.close();
@@ -335,11 +366,11 @@ export async function runFlexeposPayrollScrape({
 async function scrapeFlexeposStore(
   page: Page,
   config: FlexeposPayrollConfig,
-  payrollUrl: string,
+  reportUrl: string,
   storeNumber: string,
 ): Promise<FlexeposStoreWorkResult> {
   try {
-    await gotoWithRetry(page, payrollUrl, config);
+    await gotoWithRetry(page, reportUrl, config);
     await pause(page, config.waitBeforeActionMs);
     await page.locator(config.selectors.store).first().fill(storeNumber);
     await pause(page, config.waitAfterActionMs);
@@ -347,10 +378,14 @@ async function scrapeFlexeposStore(
     await pause(page, config.waitAfterActionMs);
     await page.locator(config.selectors.endDate).first().fill(config.endDate ?? "");
     await pause(page, config.waitAfterActionMs);
-    await page.locator(config.selectors.overtime).first().check();
-    await pause(page, config.waitAfterActionMs);
+
+    if (config.includeOvertime) {
+      await page.locator(config.selectors.overtime).first().check();
+      await pause(page, config.waitAfterActionMs);
+    }
+
     await page.locator(config.selectors.submit).first().click();
-    await pause(page, config.waitAfterActionMs);
+    await pause(page, config.submitWaitAfterMs);
     await page
       .locator(config.selectors.payrollTable)
       .first()
@@ -358,7 +393,7 @@ async function scrapeFlexeposStore(
     await pause(page, config.waitAfterActionMs);
 
     const html = await page.content();
-    const parseResult = parsePayrollHtmlOnServer(html);
+    const parseResult = parseFlexeposReportHtml(html, config.reportType);
 
     return {
       parseResult,
@@ -424,7 +459,7 @@ async function isLoggedIn(page: Page, config: FlexeposPayrollConfig) {
     .catch(() => false);
 }
 
-async function findPayrollUrl(page: Page, config: FlexeposPayrollConfig) {
+async function findReportUrl(page: Page, config: FlexeposPayrollConfig) {
   const links = await page.evaluate(
     ({ baseUrl }) => {
       return [...document.querySelectorAll<HTMLAnchorElement>("a[href]")]
@@ -437,14 +472,26 @@ async function findPayrollUrl(page: Page, config: FlexeposPayrollConfig) {
     { baseUrl: config.baseUrl },
   );
   const match = links.find(
-    (link) => normalizeText(link.text) === normalizeText(config.payrollLinkText),
+    (link) => normalizeText(link.text) === normalizeText(config.reportLinkText),
   );
 
   if (!match) {
-    throw new Error(`No Flexepos link matched "${config.payrollLinkText}".`);
+    throw new Error(`No Flexepos link matched "${config.reportLinkText}".`);
   }
 
   return match.href;
+}
+
+function parseFlexeposReportHtml(
+  html: string,
+  reportType: FlexeposReportType,
+): ScrapeParseResult {
+  switch (reportType) {
+    case "tip-breakdown-report":
+      return parseTipBreakdownHtmlOnServer(html);
+    case "payroll":
+      return parsePayrollHtmlOnServer(html);
+  }
 }
 
 async function gotoWithRetry(

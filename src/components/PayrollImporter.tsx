@@ -27,10 +27,20 @@ import {
   ThemeProvider,
   Tooltip,
   Typography,
+  ToggleButton,
+  ToggleButtonGroup,
   createTheme,
 } from "@mui/material";
 
-import type { PayrollParseResult, PayrollPayload } from "@/lib/payrollParser";
+import type { PayrollPayload } from "@/lib/payrollParser";
+import {
+  EMPTY_SCRAPE_PARSE_RESULT,
+  FLEXEPOS_REPORT_OPTIONS,
+  type FlexeposReportOption,
+  type FlexeposReportType,
+  type ScrapePayload,
+  getFlexeposReportLabel,
+} from "@/lib/reportTypes";
 import {
   DEFAULT_SCRAPE_BATCH_SIZE,
   chunkStoreNumbers,
@@ -46,6 +56,7 @@ import {
   createScrapeRunRequestBody,
   parseStoreNumbersInput,
 } from "@/lib/scrapeRequest";
+import type { TipBreakdownPayload } from "@/lib/tipBreakdownParser";
 
 const theme = createTheme({
   palette: {
@@ -100,12 +111,6 @@ const theme = createTheme({
 type ScrapeUiStatus = "idle" | "running" | "complete" | "error";
 type SaveUiStatus = "idle" | "saving" | "saved" | "error";
 
-const EMPTY_PAYROLL_RESULT: PayrollParseResult = {
-  payload: [],
-  sections: [],
-  warnings: [],
-};
-
 const EMPTY_SCRAPE_PROGRESS: ScrapeProgress = {
   completed: 0,
   failed: 0,
@@ -115,12 +120,14 @@ const EMPTY_SCRAPE_PROGRESS: ScrapeProgress = {
 
 type ScrapeConfigResponse = {
   batch_size?: unknown;
+  reports?: unknown;
   store_numbers?: unknown;
 };
 
 export function PayrollImporter() {
   const [startDateInput, setStartDateInput] = useState("");
   const [endDateInput, setEndDateInput] = useState("");
+  const [reportType, setReportType] = useState<FlexeposReportType>("payroll");
   const [scrapeRun, setScrapeRun] = useState<PayrollScrapeRun | null>(null);
   const [scrapeStatus, setScrapeStatus] = useState<ScrapeUiStatus>("idle");
   const [scrapeError, setScrapeError] = useState<string | null>(null);
@@ -129,20 +136,38 @@ export function PayrollImporter() {
   const [copied, setCopied] = useState(false);
 
   const result = useMemo(() => {
-    return scrapeRun?.result ?? EMPTY_PAYROLL_RESULT;
+    return scrapeRun?.result ?? EMPTY_SCRAPE_PARSE_RESULT;
   }, [scrapeRun]);
+  const resultReportType = scrapeRun?.report_type ?? reportType;
+  const resultReportLabel = getFlexeposReportLabel(resultReportType);
 
   const payloadJson = useMemo(() => {
     return JSON.stringify(result.payload, null, 2);
   }, [result.payload]);
 
-  const totalRegularHours = useMemo(() => {
-    return sumHours(result.payload, "regular_hours");
+  const payrollPayloadRows = useMemo(() => {
+    return result.payload.filter(isPayrollPayload);
   }, [result.payload]);
 
-  const totalOvertimeHours = useMemo(() => {
-    return sumHours(result.payload, "overtime_hours");
+  const tipBreakdownPayloadRows = useMemo(() => {
+    return result.payload.filter(isTipBreakdownPayload);
   }, [result.payload]);
+
+  const totalRegularHours = useMemo(() => {
+    return sumHours(payrollPayloadRows, "regular_hours");
+  }, [payrollPayloadRows]);
+
+  const totalOvertimeHours = useMemo(() => {
+    return sumHours(payrollPayloadRows, "overtime_hours");
+  }, [payrollPayloadRows]);
+
+  const totalTipPayIns = useMemo(() => {
+    return sumTipAmount(tipBreakdownPayloadRows, "total_payins");
+  }, [tipBreakdownPayloadRows]);
+
+  const totalTips = useMemo(() => {
+    return sumTipAmount(tipBreakdownPayloadRows, "total_tips");
+  }, [tipBreakdownPayloadRows]);
 
   const scrapeSummary = useMemo(() => {
     const storeResults = scrapeRun?.store_results ?? [];
@@ -187,8 +212,8 @@ export function PayrollImporter() {
 
     anchor.href = url;
     anchor.download = scrapeRun
-      ? `${scrapeRun.run_id}.payload.json`
-      : "payroll-payload.json";
+      ? `${scrapeRun.run_id}.${resultReportType}.payload.json`
+      : `${reportType}.payload.json`;
     anchor.click();
     URL.revokeObjectURL(url);
   }
@@ -227,10 +252,12 @@ export function PayrollImporter() {
     storeNumber: string,
     {
       endDate,
+      reportType,
       startedAt,
       startDate,
     }: {
       endDate: string;
+      reportType: FlexeposReportType;
       startedAt: string;
       startDate: string;
     },
@@ -244,6 +271,7 @@ export function PayrollImporter() {
         body: JSON.stringify(
           createScrapeRunRequestBody({
             endDate,
+            reportType,
             startDate,
             stores: [storeNumber],
           }),
@@ -262,6 +290,7 @@ export function PayrollImporter() {
             ? caught.message
             : "Unable to scrape this store.",
         finishedAt: new Date().toISOString(),
+        reportType,
         startedAt,
         stores: [storeNumber],
       });
@@ -279,7 +308,9 @@ export function PayrollImporter() {
     try {
       const { batchSize, stores } = await fetchScrapeConfig();
       const startedAt = new Date().toISOString();
+      const selectedReportType = reportType;
       let workingRun = createQueuedScrapeRun({
+        reportType: selectedReportType,
         runId: createClientRunId(),
         startedAt,
         stores,
@@ -295,6 +326,7 @@ export function PayrollImporter() {
           batch.map((storeNumber) =>
             scrapeSingleStore(storeNumber, {
               endDate: endDateInput,
+              reportType: selectedReportType,
               startDate: startDateInput,
               startedAt,
             }),
@@ -329,6 +361,7 @@ export function PayrollImporter() {
           "content-type": "application/json",
         },
         body: JSON.stringify({
+          report_type: resultReportType,
           run_id: scrapeRun?.run_id ?? null,
           payload: result.payload,
         }),
@@ -370,11 +403,11 @@ export function PayrollImporter() {
             >
               <Box>
                 <Typography component="h1" variant="h1">
-                  Payroll Payload Builder
+                  Flexepos Payload Builder
                 </Typography>
                 <Typography color="text.secondary" sx={{ mt: 0.75 }}>
-                  Scrape configured payroll stores, inspect the HTML returned by
-                  the site, then review the computation payload.
+                  Scrape configured stores, inspect the HTML returned by the
+                  site, then review the {resultReportLabel} payload.
                 </Typography>
               </Box>
 
@@ -409,12 +442,15 @@ export function PayrollImporter() {
             <ScrapePanel
               endDateInput={endDateInput}
               hasInvalidDateRange={hasInvalidScrapeDateRange}
+              reportOptions={FLEXEPOS_REPORT_OPTIONS}
+              reportType={reportType}
               scrapeRun={scrapeRun}
               scrapeProgress={scrapeProgress}
               scrapeStatus={scrapeStatus}
               scrapeSummary={scrapeSummary}
               startDateInput={startDateInput}
               onEndDateInputChange={setEndDateInput}
+              onReportTypeChange={setReportType}
               onStartDateInputChange={setStartDateInput}
               onStart={startScrapeRun}
             />
@@ -463,18 +499,33 @@ export function PayrollImporter() {
               >
                 <SectionHeader title="Payload Rows">
                   <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
-                    <Chip
-                      label={`Regular ${formatHours(totalRegularHours)}`}
-                      size="small"
-                    />
-                    <Chip
-                      label={`Overtime ${formatHours(totalOvertimeHours)}`}
-                      size="small"
-                    />
+                    {resultReportType === "tip-breakdown-report" ? (
+                      <>
+                        <Chip
+                          label={`Pay-Ins ${formatAmount(totalTipPayIns)}`}
+                          size="small"
+                        />
+                        <Chip
+                          label={`Tips ${formatAmount(totalTips)}`}
+                          size="small"
+                        />
+                      </>
+                    ) : (
+                      <>
+                        <Chip
+                          label={`Regular ${formatHours(totalRegularHours)}`}
+                          size="small"
+                        />
+                        <Chip
+                          label={`Overtime ${formatHours(totalOvertimeHours)}`}
+                          size="small"
+                        />
+                      </>
+                    )}
                   </Box>
                 </SectionHeader>
                 <Divider />
-                <PayloadTable rows={result.payload} />
+                <PayloadTable reportType={resultReportType} rows={result.payload} />
               </Paper>
 
               <Paper
@@ -590,17 +641,22 @@ function SectionHeader({
 function ScrapePanel({
   endDateInput,
   hasInvalidDateRange,
+  reportOptions,
+  reportType,
   scrapeRun,
   scrapeProgress,
   scrapeStatus,
   scrapeSummary,
   startDateInput,
   onEndDateInputChange,
+  onReportTypeChange,
   onStartDateInputChange,
   onStart,
 }: {
   endDateInput: string;
   hasInvalidDateRange: boolean;
+  reportOptions: FlexeposReportOption[];
+  reportType: FlexeposReportType;
   scrapeRun: PayrollScrapeRun | null;
   scrapeProgress: ScrapeProgress;
   scrapeStatus: ScrapeUiStatus;
@@ -613,13 +669,17 @@ function ScrapePanel({
   };
   startDateInput: string;
   onEndDateInputChange: (value: string) => void;
+  onReportTypeChange: (value: FlexeposReportType) => void;
   onStartDateInputChange: (value: string) => void;
   onStart: () => void;
 }) {
+  const selectedReportLabel = getFlexeposReportLabel(reportType);
+
   return (
     <Paper variant="outlined" sx={{ overflow: "hidden" }}>
       <SectionHeader title="Site Scraper">
         <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
+          <Chip label={selectedReportLabel} size="small" />
           <Chip label={`${scrapeSummary.total} stores`} size="small" />
           <Chip label={`${scrapeProgress.percent}% complete`} size="small" />
           <Chip label={`${scrapeSummary.rows} rows`} size="small" />
@@ -633,6 +693,31 @@ function ScrapePanel({
           spacing={2}
           sx={{ alignItems: { xs: "stretch", md: "flex-start" } }}
         >
+          <Box sx={{ minWidth: { xs: 0, md: 260 } }}>
+            <ToggleButtonGroup
+              aria-label="Report type"
+              disabled={scrapeStatus === "running"}
+              exclusive
+              fullWidth
+              onChange={(_, value: FlexeposReportType | null) => {
+                if (value) {
+                  onReportTypeChange(value);
+                }
+              }}
+              size="small"
+              value={reportType}
+            >
+              {reportOptions.map((option) => (
+                <ToggleButton
+                  key={option.type}
+                  sx={{ px: 1.5, whiteSpace: "nowrap" }}
+                  value={option.type}
+                >
+                  {option.label}
+                </ToggleButton>
+              ))}
+            </ToggleButtonGroup>
+          </Box>
           <Stack
             direction={{ xs: "column", sm: "row", md: "column", lg: "row" }}
             spacing={1.5}
@@ -880,7 +965,51 @@ function ScrapedHtmlPanel({ stores }: { stores: PayrollScrapeStoreResult[] }) {
   );
 }
 
-function PayloadTable({ rows }: { rows: PayrollPayload[] }) {
+function PayloadTable({
+  reportType,
+  rows,
+}: {
+  reportType: FlexeposReportType;
+  rows: ScrapePayload[];
+}) {
+  if (reportType === "tip-breakdown-report") {
+    const tipRows = rows.filter(isTipBreakdownPayload);
+
+    return (
+      <TableContainer sx={{ maxHeight: 580 }}>
+        <Table stickyHeader size="small" aria-label="Tip breakdown payload rows">
+          <TableHead>
+            <TableRow>
+              <TableCell>Store Number</TableCell>
+              <TableCell align="right">Total Pay-Ins</TableCell>
+              <TableCell align="right">Total Tips</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {tipRows.map((row, index) => (
+              <TableRow key={`${row.store_number ?? "store"}-${index}`}>
+                <TableCell>{formatNullable(row.store_number)}</TableCell>
+                <TableCell align="right">
+                  {formatAmount(row.total_payins)}
+                </TableCell>
+                <TableCell align="right">{formatAmount(row.total_tips)}</TableCell>
+              </TableRow>
+            ))}
+            {tipRows.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={3} sx={{ color: "text.secondary" }}>
+                  No payload rows loaded.
+                </TableCell>
+              </TableRow>
+            ) : null}
+          </TableBody>
+        </Table>
+      </TableContainer>
+    );
+  }
+
+  const payrollRows = rows.filter(isPayrollPayload);
+
   return (
     <TableContainer sx={{ maxHeight: 580 }}>
       <Table stickyHeader size="small" aria-label="Payroll payload rows">
@@ -894,7 +1023,7 @@ function PayloadTable({ rows }: { rows: PayrollPayload[] }) {
           </TableRow>
         </TableHead>
         <TableBody>
-          {rows.map((row, index) => (
+          {payrollRows.map((row, index) => (
             <TableRow key={`${row.employee_id ?? "employee"}-${index}`}>
               <TableCell>{formatNullable(row.employee_id)}</TableCell>
               <TableCell>{formatNullable(row.employee_number)}</TableCell>
@@ -903,7 +1032,7 @@ function PayloadTable({ rows }: { rows: PayrollPayload[] }) {
               <TableCell align="right">{formatNullable(row.overtime_hours)}</TableCell>
             </TableRow>
           ))}
-          {rows.length === 0 ? (
+          {payrollRows.length === 0 ? (
             <TableRow>
               <TableCell colSpan={5} sx={{ color: "text.secondary" }}>
                 No payload rows loaded.
@@ -916,12 +1045,34 @@ function PayloadTable({ rows }: { rows: PayrollPayload[] }) {
   );
 }
 
+function isPayrollPayload(row: ScrapePayload): row is PayrollPayload {
+  return "regular_hours" in row || "overtime_hours" in row;
+}
+
+function isTipBreakdownPayload(row: ScrapePayload): row is TipBreakdownPayload {
+  return "total_payins" in row || "total_tips" in row;
+}
+
 function sumHours(rows: PayrollPayload[], key: "regular_hours" | "overtime_hours") {
   return rows.reduce((total, row) => total + (row[key] ?? 0), 0);
 }
 
-function formatNullable(value: number | null) {
+function sumTipAmount(
+  rows: TipBreakdownPayload[],
+  key: "total_payins" | "total_tips",
+) {
+  return rows.reduce((total, row) => total + row[key], 0);
+}
+
+function formatNullable(value: number | string | null) {
   return value === null ? "-" : value.toString();
+}
+
+function formatAmount(value: number) {
+  return value.toLocaleString(undefined, {
+    maximumFractionDigits: 2,
+    minimumFractionDigits: 2,
+  });
 }
 
 function formatHours(value: number) {
@@ -997,7 +1148,7 @@ function getScrapeStoreNote(store: PayrollScrapeStoreResult) {
   }
 
   if (store.rows === 0) {
-    return "No payroll rows found";
+    return "No report rows found";
   }
 
   return "Parsed immediately after scrape";

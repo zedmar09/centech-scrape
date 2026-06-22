@@ -1,9 +1,14 @@
-import { combinePayrollParseResults } from "./payrollParser";
+import {
+  type FlexeposReportType,
+  type ScrapePayload,
+  combineScrapeParseResults,
+} from "./reportTypes";
 import type { PayrollScrapeRun, PayrollScrapeStoreResult } from "./scrapeRuns";
 
 export const DEFAULT_SCRAPE_BATCH_SIZE = 2;
 
 export type QueuedScrapeRunInput = {
+  reportType?: FlexeposReportType;
   runId: string;
   startedAt: string;
   stores: string[];
@@ -12,6 +17,7 @@ export type QueuedScrapeRunInput = {
 export type FailedScrapeRunInput = {
   error: string;
   finishedAt: string;
+  reportType?: FlexeposReportType;
   startedAt: string;
   stores: string[];
 };
@@ -39,11 +45,13 @@ export function chunkStoreNumbers(stores: string[], batchSize = DEFAULT_SCRAPE_B
 }
 
 export function createQueuedScrapeRun({
+  reportType = "payroll",
   runId,
   startedAt,
   stores,
 }: QueuedScrapeRunInput): PayrollScrapeRun {
   return {
+    report_type: reportType,
     run_id: runId,
     status: "running",
     started_at: startedAt,
@@ -88,10 +96,12 @@ export function markStoresScraping(
 export function createFailedScrapeRun({
   error,
   finishedAt,
+  reportType = "payroll",
   startedAt,
   stores,
 }: FailedScrapeRunInput): PayrollScrapeRun {
   return {
+    report_type: reportType,
     run_id: `failed_${stores.join("_")}`,
     status: "completed_with_errors",
     started_at: startedAt,
@@ -144,9 +154,11 @@ export function mergeScrapeRunBatch(
   const retainedResult = {
     ...run.result,
     sections: retainedSections,
-    payload: retainedSections.flatMap((section) => section.payload),
+    payload: retainedSections.flatMap(
+      (section) => section.payload as ScrapePayload[],
+    ),
   };
-  const result = combinePayrollParseResults([
+  const result = combineScrapeParseResults([
     retainedResult,
     ...batchRuns.map((batchRun) => batchRun.result),
   ]);
@@ -160,6 +172,7 @@ export function mergeScrapeRunBatch(
 
   return {
     ...run,
+    report_type: run.report_type ?? batchRuns[0]?.report_type,
     status,
     finished_at: status === "running" ? run.finished_at : finishedAt,
     store_results: storeResults,

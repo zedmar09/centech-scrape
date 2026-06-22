@@ -8,8 +8,13 @@ import {
   createPayrollScraperConfig,
   scrapeStorePayrollHtml,
 } from "@/lib/payrollScraper";
-import { parseConcurrencyInput, parseStoreNumbersInput } from "@/lib/scrapeRequest";
+import {
+  parseConcurrencyInput,
+  parseReportTypeInput,
+  parseStoreNumbersInput,
+} from "@/lib/scrapeRequest";
 import { runPayrollScrape } from "@/lib/scrapeRuns";
+import { FLEXEPOS_REPORT_OPTIONS } from "@/lib/reportTypes";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -19,6 +24,7 @@ type StartScrapeRequest = {
   stores?: unknown;
   concurrency?: unknown;
   end_date?: unknown;
+  report_type?: unknown;
   start_date?: unknown;
 };
 
@@ -31,6 +37,7 @@ export async function GET() {
 
   return NextResponse.json({
     batch_size: 2,
+    reports: FLEXEPOS_REPORT_OPTIONS,
     store_numbers: stores,
   });
 }
@@ -50,6 +57,7 @@ export async function POST(request: NextRequest) {
   const stores = parseStoreNumbersInput(body.stores);
   const startDate = parseDateInput(body.start_date);
   const endDate = parseDateInput(body.end_date);
+  const reportType = parseReportTypeInput(body.report_type);
   const scraperConfig = createPayrollScraperConfig();
 
   if (scraperConfig.source !== "flexepos" && stores.length === 0) {
@@ -66,6 +74,13 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  if (scraperConfig.source !== "flexepos" && reportType !== "payroll") {
+    return NextResponse.json(
+      { error: "Tip breakdown scraping is only available for Flexepos." },
+      { status: 400 },
+    );
+  }
+
   try {
     const run =
       scraperConfig.source === "flexepos"
@@ -73,6 +88,7 @@ export async function POST(request: NextRequest) {
             stores,
             config: createFlexeposPayrollConfig(process.env, {
               endDate,
+              reportType,
               startDate,
             }),
           })
