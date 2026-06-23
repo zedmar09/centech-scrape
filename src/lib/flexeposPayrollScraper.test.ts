@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import flexeposConfig from "../config/flexepos.config.json";
 import {
   DEFAULT_FLEXEPOS_STORE_NUMBERS,
   createFlexeposPayrollConfig,
@@ -8,6 +9,15 @@ import {
 } from "./flexeposPayrollScraper";
 
 describe("flexeposPayrollScraper config", () => {
+  it("keeps stable Flexepos defaults in the JSON config file", () => {
+    expect(flexeposConfig.storeNumbers).toHaveLength(87);
+    expect(flexeposConfig.reports.payroll.linkText).toBe("Payroll");
+    expect(flexeposConfig.reports.tipBreakdown.linkText).toBe(
+      "Tip Breakdown Report",
+    );
+    expect(flexeposConfig.selectors.store).toBe("input[name='parameters:store']");
+  });
+
   it("uses the 87 configured payroll stores by default", () => {
     const config = createFlexeposPayrollConfig({});
 

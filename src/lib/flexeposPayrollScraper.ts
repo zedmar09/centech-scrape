@@ -1,3 +1,4 @@
+import flexeposConfig from "../config/flexepos.config.json";
 import {
   type FlexeposReportType,
   type ScrapeParseResult,
@@ -13,95 +14,7 @@ import {
   normalizeStoreNumbers,
 } from "./scrapeRuns";
 
-export const DEFAULT_FLEXEPOS_STORE_NUMBERS = [
-  "2006",
-  "2016",
-  "2017",
-  "2020",
-  "2023",
-  "2024",
-  "2047",
-  "4003",
-  "4004",
-  "4005",
-  "4008",
-  "4009",
-  "4010",
-  "4015",
-  "4021",
-  "4025",
-  "4027",
-  "4034",
-  "4036",
-  "4042",
-  "4052",
-  "4061",
-  "4074",
-  "4083",
-  "5042",
-  "5043",
-  "5049",
-  "5051",
-  "5057",
-  "5059",
-  "5062",
-  "5101",
-  "5112",
-  "5127",
-  "6021",
-  "6026",
-  "6032",
-  "6037",
-  "6039",
-  "6044",
-  "6065",
-  "6067",
-  "6072",
-  "6074",
-  "6076",
-  "6083",
-  "6088",
-  "6093",
-  "6094",
-  "6102",
-  "7024",
-  "7032",
-  "7039",
-  "7049",
-  "7066",
-  "13026",
-  "13062",
-  "13082",
-  "13106",
-  "13116",
-  "13138",
-  "13148",
-  "13160",
-  "13162",
-  "13219",
-  "37001",
-  "37002",
-  "37004",
-  "37006",
-  "37007",
-  "37009",
-  "37010",
-  "37013",
-  "37014",
-  "37016",
-  "37020",
-  "49001",
-  "49002",
-  "49003",
-  "49004",
-  "49005",
-  "49006",
-  "49007",
-  "49008",
-  "49009",
-  "49010",
-  "49011",
-];
+export const DEFAULT_FLEXEPOS_STORE_NUMBERS = flexeposConfig.storeNumbers;
 
 export type FlexeposPayrollConfig = {
   baseUrl: string;
@@ -222,61 +135,82 @@ export function createFlexeposPayrollConfig(
   const configuredStores = splitStoreNumbers(env.STORE_NUMBERS);
   const reportType = parseFlexeposReportType(overrides.reportType);
   const reportTarget = getFlexeposReportTarget(reportType);
+  const reportConfig =
+    reportType === "payroll"
+      ? flexeposConfig.reports.payroll
+      : flexeposConfig.reports.tipBreakdown;
+  const configuredSubmitWaitAfterMs =
+    "submitWaitAfterMs" in reportConfig &&
+    typeof reportConfig.submitWaitAfterMs === "number"
+      ? reportConfig.submitWaitAfterMs
+      : undefined;
   const waitAfterActionMs = readPositiveInteger(
     env.FLEXEPOS_WAIT_AFTER_ACTION_MS,
-    1_500,
+    flexeposConfig.timeouts.waitAfterActionMs,
   );
   const reportLinkText =
     reportType === "payroll"
-      ? env.FLEXEPOS_PAYROLL_LINK_TEXT?.trim() || reportTarget.defaultLinkText
+      ? env.FLEXEPOS_PAYROLL_LINK_TEXT?.trim() || reportConfig.linkText
       : env.FLEXEPOS_TIP_BREAKDOWN_LINK_TEXT?.trim() ||
-        reportTarget.defaultLinkText;
+        reportConfig.linkText;
 
   return {
-    baseUrl: env.FLEXEPOS_BASE_URL?.trim() || "https://fms.flexepos.com/FlexeposWeb/",
+    baseUrl: env.FLEXEPOS_BASE_URL?.trim() || flexeposConfig.baseUrl,
     browserWsEndpoint: env.FLEXEPOS_PLAYWRIGHT_WS_ENDPOINT?.trim() || null,
-    connectMode:
-      env.FLEXEPOS_PLAYWRIGHT_CONNECT_MODE === "playwright"
-        ? "playwright"
-        : "cdp",
+    connectMode: readConnectMode(
+      env.FLEXEPOS_PLAYWRIGHT_CONNECT_MODE,
+      flexeposConfig.playwright.connectMode,
+    ),
     endDate: normalizePayrollDateInput(overrides.endDate),
-    headless: env.FLEXEPOS_HEADLESS !== "false",
-    includeOvertime: reportTarget.includeOvertime,
-    loginPath: env.FLEXEPOS_LOGIN_PATH?.trim() || "home.seam",
+    headless: readBoolean(env.FLEXEPOS_HEADLESS, flexeposConfig.headless),
+    includeOvertime: reportConfig.includeOvertime ?? reportTarget.includeOvertime,
+    loginPath: env.FLEXEPOS_LOGIN_PATH?.trim() || flexeposConfig.loginPath,
     loggedInSelector:
-      env.FLEXEPOS_LOGGED_IN_SELECTOR?.trim() || "a:has-text('Logout')",
-    navigationRetries: readPositiveInteger(env.FLEXEPOS_NAVIGATION_RETRIES, 2),
+      env.FLEXEPOS_LOGGED_IN_SELECTOR?.trim() ||
+      flexeposConfig.loggedInSelector,
+    navigationRetries: readPositiveInteger(
+      env.FLEXEPOS_NAVIGATION_RETRIES,
+      flexeposConfig.navigation.retries,
+    ),
     navigationTimeoutMs: readPositiveInteger(
       env.FLEXEPOS_NAVIGATION_TIMEOUT_MS,
-      90_000,
+      flexeposConfig.navigation.timeoutMs,
     ),
-    navigationWaitUntil: readLoadState(env.FLEXEPOS_NAVIGATION_WAIT_UNTIL),
+    navigationWaitUntil: readLoadState(
+      env.FLEXEPOS_NAVIGATION_WAIT_UNTIL ?? flexeposConfig.navigation.waitUntil,
+    ),
     password: env.FMS_PASSWORD || null,
-    payrollLinkText: env.FLEXEPOS_PAYROLL_LINK_TEXT?.trim() || "Payroll",
+    payrollLinkText:
+      env.FLEXEPOS_PAYROLL_LINK_TEXT?.trim() ||
+      flexeposConfig.reports.payroll.linkText,
     reportLinkText,
     reportType,
     requiresRemoteBrowser: env.VERCEL === "1" || env.VERCEL === "true",
     selectors: {
-      username: env.FLEXEPOS_USERNAME_SELECTOR?.trim() || "#login\\:username",
-      password: env.FLEXEPOS_PASSWORD_SELECTOR?.trim() || "#login\\:password",
+      username:
+        env.FLEXEPOS_USERNAME_SELECTOR?.trim() || flexeposConfig.selectors.username,
+      password:
+        env.FLEXEPOS_PASSWORD_SELECTOR?.trim() || flexeposConfig.selectors.password,
       loginSubmit:
         env.FLEXEPOS_LOGIN_SUBMIT_SELECTOR?.trim() ||
-        "form#login input[type='submit']",
+        flexeposConfig.selectors.loginSubmit,
       store:
         env.FLEXEPOS_STORE_SELECTOR?.trim() ||
-        "input[name='parameters:store']",
+        flexeposConfig.selectors.store,
       startDate:
         env.FLEXEPOS_START_DATE_SELECTOR?.trim() ||
-        "input[name='parameters:startDateCalendarInputDate']",
+        flexeposConfig.selectors.startDate,
       endDate:
         env.FLEXEPOS_END_DATE_SELECTOR?.trim() ||
-        "input[name='parameters:endDateCalendarInputDate']",
+        flexeposConfig.selectors.endDate,
       overtime:
         env.FLEXEPOS_OVERTIME_SELECTOR?.trim() ||
-        "input[name='parameters:j_id55']",
+        flexeposConfig.selectors.overtime,
       submit:
-        env.FLEXEPOS_SUBMIT_SELECTOR?.trim() || "input[value='Submit']",
-      payrollTable: env.FLEXEPOS_PAYROLL_TABLE_SELECTOR?.trim() || "table",
+        env.FLEXEPOS_SUBMIT_SELECTOR?.trim() || flexeposConfig.selectors.submit,
+      payrollTable:
+        env.FLEXEPOS_PAYROLL_TABLE_SELECTOR?.trim() ||
+        flexeposConfig.selectors.table,
     },
     startDate: normalizePayrollDateInput(overrides.startDate),
     stores: normalizeStoreNumbers(
@@ -287,14 +221,19 @@ export function createFlexeposPayrollConfig(
         ? env.FLEXEPOS_TIP_BREAKDOWN_SUBMIT_WAIT_AFTER_MS ??
             env.FLEXEPOS_SUBMIT_WAIT_AFTER_MS
         : env.FLEXEPOS_SUBMIT_WAIT_AFTER_MS,
-      reportTarget.submitWaitAfterMs ?? waitAfterActionMs,
+      configuredSubmitWaitAfterMs ??
+        reportTarget.submitWaitAfterMs ??
+        waitAfterActionMs,
     ),
-    timeoutMs: readPositiveInteger(env.FLEXEPOS_TIMEOUT_MS, 30_000),
+    timeoutMs: readPositiveInteger(
+      env.FLEXEPOS_TIMEOUT_MS,
+      flexeposConfig.timeouts.defaultMs,
+    ),
     username: env.FMS_USERNAME?.trim() || null,
     waitAfterActionMs,
     waitBeforeActionMs: readPositiveInteger(
       env.FLEXEPOS_WAIT_BEFORE_ACTION_MS,
-      500,
+      flexeposConfig.timeouts.waitBeforeActionMs,
     ),
   };
 }
@@ -586,6 +525,23 @@ function readLoadState(value: string | undefined): LoadState {
     default:
       return "commit";
   }
+}
+
+function readConnectMode(
+  value: string | undefined,
+  fallback: string,
+): FlexeposPayrollConfig["connectMode"] {
+  const normalized = value?.trim() || fallback;
+
+  return normalized === "playwright" ? "playwright" : "cdp";
+}
+
+function readBoolean(value: string | undefined, fallback: boolean) {
+  if (value === undefined) {
+    return fallback;
+  }
+
+  return value !== "false";
 }
 
 function readPositiveInteger(value: string | undefined, fallback: number) {

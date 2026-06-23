@@ -21,10 +21,13 @@ npm install playwright
 npx playwright install chromium
 ```
 
-Fill `.env.local` with `FMS_USERNAME`, `FMS_PASSWORD`, and `STORE_NUMBERS`.
-The start and end date are selected in the UI for each scrape run. For local
-testing, `STORE_NUMBERS=2006,2017` is enough. The default `.env.example`
-contains the 87 stores found in the Centech `env.txt` review.
+Fill `.env.local` with `FMS_USERNAME` and `FMS_PASSWORD`. The start and end
+date are selected in the UI for each scrape run.
+
+Stable scraper settings live in
+`src/config/flexepos.config.json`: store numbers, report links, timeouts, and
+selectors. For a short test run, set `STORE_NUMBERS=2006,2017` in `.env.local`
+to override the committed store list.
 
 Run the app:
 
@@ -34,7 +37,7 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000). Select Payroll or Tip
 Breakdown Report, choose the start and end date, then start the scrape. Stores
-come from `STORE_NUMBERS`.
+come from `src/config/flexepos.config.json`, unless `STORE_NUMBERS` is set.
 
 The UI runs the configured store list as a client-driven queue. It starts two
 one-store scrape requests at a time, waits for both to finish, merges their
@@ -61,33 +64,23 @@ Supported report payloads:
 }
 ```
 
-## Vercel Staging Setup
+## Runtime Env Setup
 
 1. Run `npm install` locally so `package-lock.json` includes the
    `playwright-core` runtime dependency before pushing.
-2. Set Vercel environment variables from `.env.example`.
-3. Set `PAYROLL_SCRAPER_SOURCE=flexepos`.
-4. Use a remote browser provider for staging/production and set
+2. Set production environment variables from `.env.example`.
+3. Use a remote browser provider for Vercel/serverless production and set
    `FLEXEPOS_PLAYWRIGHT_WS_ENDPOINT`.
-5. Keep `FLEXEPOS_PLAYWRIGHT_CONNECT_MODE=cdp` unless your provider gives a
+4. Keep `FLEXEPOS_PLAYWRIGHT_CONNECT_MODE=cdp` unless your provider gives a
    Playwright websocket endpoint, then use `playwright`.
-6. Deploy to Vercel and test with two stores first, for example
+5. For an initial smoke test, temporarily override the committed store list with
    `STORE_NUMBERS=2006,2016`.
-7. After the short run works, restore the full 87-store list.
+6. After the short run works, remove `STORE_NUMBERS` so the app uses
+   `src/config/flexepos.config.json`.
 
 Each API call scrapes one store. The browser tab owns the queue, so keep the tab
 open until the progress reaches 100%. If you need the scrape to continue after
 closing the tab, move the queue to a durable worker with persistent run state.
-
-## Save Payload
-
-The `Save Payload` button posts the combined payload to `/api/payroll-payloads`.
-Set these env vars when the backend endpoint is ready:
-
-```bash
-PAYROLL_PAYLOAD_SAVE_URL=
-PAYROLL_PAYLOAD_SAVE_TOKEN=
-```
 
 ## Verify
 
