@@ -46,6 +46,7 @@ import {
   chunkStoreNumbers,
   createFailedScrapeRun,
   createQueuedScrapeRun,
+  getFailedStoreNumbers,
   getScrapeProgress,
   markStoresScraping,
   mergeScrapeRunBatch,
@@ -187,9 +188,20 @@ export function PayrollImporter() {
     return scrapeRun ? getScrapeProgress(scrapeRun) : EMPTY_SCRAPE_PROGRESS;
   }, [scrapeRun]);
 
+  const failedStoreNumbers = useMemo(() => {
+    return scrapeRun ? getFailedStoreNumbers(scrapeRun) : [];
+  }, [scrapeRun]);
+
   const hasInvalidScrapeDateRange = Boolean(
     startDateInput && endDateInput && startDateInput > endDateInput,
   );
+  const isRetryDisabled =
+    scrapeStatus === "running" ||
+    !scrapeRun ||
+    failedStoreNumbers.length === 0 ||
+    !startDateInput ||
+    !endDateInput ||
+    hasInvalidScrapeDateRange;
 
   function clearScrapeResults() {
     setScrapeRun(null);
@@ -318,26 +330,13 @@ export function PayrollImporter() {
 
       setScrapeRun(workingRun);
 
-      for (const batch of chunkStoreNumbers(stores, batchSize)) {
-        workingRun = markStoresScraping(workingRun, batch);
-        setScrapeRun(workingRun);
-
-        const batchRuns = await Promise.all(
-          batch.map((storeNumber) =>
-            scrapeSingleStore(storeNumber, {
-              endDate: endDateInput,
-              reportType: selectedReportType,
-              startDate: startDateInput,
-              startedAt,
-            }),
-          ),
-        );
-
-        workingRun = mergeScrapeRunBatch(workingRun, batchRuns, {
-          finishedAt: new Date().toISOString(),
-        });
-        setScrapeRun(workingRun);
-      }
+      workingRun = await runStoreBatches({
+        batchSize,
+        reportType: selectedReportType,
+        run: workingRun,
+        startedAt,
+        stores,
+      });
 
       setScrapeStatus("complete");
     } catch (caught) {
@@ -348,6 +347,76 @@ export function PayrollImporter() {
           : "Unable to complete this scrape run.",
       );
     }
+  }
+
+  async function retryFailedStores(stores: string[]) {
+    if (!scrapeRun || stores.length === 0) {
+      return;
+    }
+
+    setScrapeStatus("running");
+    setScrapeError(null);
+    setSaveStatus("idle");
+    setSaveError(null);
+    setCopied(false);
+
+    try {
+      const selectedReportType = scrapeRun.report_type ?? reportType;
+
+      await runStoreBatches({
+        batchSize: DEFAULT_SCRAPE_BATCH_SIZE,
+        reportType: selectedReportType,
+        run: scrapeRun,
+        startedAt: new Date().toISOString(),
+        stores,
+      });
+
+      setScrapeStatus("complete");
+    } catch (caught) {
+      setScrapeStatus("error");
+      setScrapeError(
+        caught instanceof Error ? caught.message : "Unable to retry failed stores.",
+      );
+    }
+  }
+
+  async function runStoreBatches({
+    batchSize,
+    reportType,
+    run,
+    startedAt,
+    stores,
+  }: {
+    batchSize: number;
+    reportType: FlexeposReportType;
+    run: PayrollScrapeRun;
+    startedAt: string;
+    stores: string[];
+  }) {
+    let workingRun = run;
+
+    for (const batch of chunkStoreNumbers(stores, batchSize)) {
+      workingRun = markStoresScraping(workingRun, batch);
+      setScrapeRun(workingRun);
+
+      const batchRuns = await Promise.all(
+        batch.map((storeNumber) =>
+          scrapeSingleStore(storeNumber, {
+            endDate: endDateInput,
+            reportType,
+            startDate: startDateInput,
+            startedAt,
+          }),
+        ),
+      );
+
+      workingRun = mergeScrapeRunBatch(workingRun, batchRuns, {
+        finishedAt: new Date().toISOString(),
+      });
+      setScrapeRun(workingRun);
+    }
+
+    return workingRun;
   }
 
   async function savePayload() {
@@ -413,6 +482,14 @@ export function PayrollImporter() {
 
               <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
                 <Button
+                  variant="outlined"
+                  startIcon={<RetryIcon />}
+                  disabled={isRetryDisabled}
+                  onClick={() => retryFailedStores(failedStoreNumbers)}
+                >
+                  Retry All Failed
+                </Button>
+                <Button
                   variant="contained"
                   startIcon={<SaveIcon />}
                   disabled={result.payload.length === 0 || saveStatus === "saving"}
@@ -451,8 +528,15 @@ export function PayrollImporter() {
               startDateInput={startDateInput}
               onEndDateInputChange={setEndDateInput}
               onReportTypeChange={setReportType}
+              onRetryStore={(storeNumber) => retryFailedStores([storeNumber])}
               onStartDateInputChange={setStartDateInput}
               onStart={startScrapeRun}
+              retryDisabled={
+                scrapeStatus === "running" ||
+                !startDateInput ||
+                !endDateInput ||
+                hasInvalidScrapeDateRange
+              }
             />
 
             {scrapeStatus === "error" && scrapeError ? (
@@ -650,8 +734,10 @@ function ScrapePanel({
   startDateInput,
   onEndDateInputChange,
   onReportTypeChange,
+  onRetryStore,
   onStartDateInputChange,
   onStart,
+  retryDisabled,
 }: {
   endDateInput: string;
   hasInvalidDateRange: boolean;
@@ -670,8 +756,10 @@ function ScrapePanel({
   startDateInput: string;
   onEndDateInputChange: (value: string) => void;
   onReportTypeChange: (value: FlexeposReportType) => void;
+  onRetryStore: (storeNumber: string) => void;
   onStartDateInputChange: (value: string) => void;
   onStart: () => void;
+  retryDisabled: boolean;
 }) {
   const selectedReportLabel = getFlexeposReportLabel(reportType);
 
@@ -841,14 +929,26 @@ function ScrapePanel({
               />
             </Stack>
           </Box>
-          <ScrapeStoreTable stores={scrapeRun.store_results} />
+          <ScrapeStoreTable
+            retryDisabled={retryDisabled}
+            stores={scrapeRun.store_results}
+            onRetryStore={onRetryStore}
+          />
         </>
       ) : null}
     </Paper>
   );
 }
 
-function ScrapeStoreTable({ stores }: { stores: PayrollScrapeStoreResult[] }) {
+function ScrapeStoreTable({
+  retryDisabled,
+  stores,
+  onRetryStore,
+}: {
+  retryDisabled: boolean;
+  stores: PayrollScrapeStoreResult[];
+  onRetryStore: (storeNumber: string) => void;
+}) {
   return (
     <TableContainer sx={{ maxHeight: 300 }}>
       <Table stickyHeader size="small" aria-label="Store scrape queue">
@@ -859,6 +959,7 @@ function ScrapeStoreTable({ stores }: { stores: PayrollScrapeStoreResult[] }) {
             <TableCell align="right">Rows</TableCell>
             <TableCell align="right">Sections</TableCell>
             <TableCell>Notes</TableCell>
+            <TableCell align="right">Action</TableCell>
           </TableRow>
         </TableHead>
         <TableBody>
@@ -877,6 +978,21 @@ function ScrapeStoreTable({ stores }: { stores: PayrollScrapeStoreResult[] }) {
               <TableCell align="right">{store.sections}</TableCell>
               <TableCell sx={{ color: "text.secondary" }}>
                 {getScrapeStoreNote(store)}
+              </TableCell>
+              <TableCell align="right">
+                {store.status === "error" ? (
+                  <Button
+                    disabled={retryDisabled}
+                    onClick={() => onRetryStore(store.store_number)}
+                    size="small"
+                    startIcon={<RetryIcon />}
+                    variant="outlined"
+                  >
+                    Retry
+                  </Button>
+                ) : (
+                  "-"
+                )}
               </TableCell>
             </TableRow>
           ))}
@@ -1201,6 +1317,14 @@ function WarningIcon(props: SvgIconProps) {
   return (
     <SvgIcon {...props}>
       <path d="M1 21h22L12 2 1 21Zm12-3h-2v-2h2v2Zm0-4h-2v-4h2v4Z" />
+    </SvgIcon>
+  );
+}
+
+function RetryIcon(props: SvgIconProps) {
+  return (
+    <SvgIcon {...props}>
+      <path d="M17.65 6.35A7.95 7.95 0 0 0 12 4a8 8 0 1 0 7.45 10.9l-1.86-.74A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h8V3l-3.35 3.35Z" />
     </SvgIcon>
   );
 }

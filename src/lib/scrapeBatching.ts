@@ -194,3 +194,9 @@ export function getScrapeProgress(run: PayrollScrapeRun): ScrapeProgress {
     total,
   };
 }
+
+export function getFailedStoreNumbers(run: PayrollScrapeRun): string[] {
+  return run.store_results
+    .filter((store) => store.status === "error")
+    .map((store) => store.store_number);
+}

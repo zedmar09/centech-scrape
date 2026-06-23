@@ -4,6 +4,7 @@ import {
   chunkStoreNumbers,
   createFailedScrapeRun,
   createQueuedScrapeRun,
+  getFailedStoreNumbers,
   getScrapeProgress,
   markStoresScraping,
   mergeScrapeRunBatch,
@@ -131,5 +132,24 @@ describe("scrape batching helpers", () => {
       }),
     ]);
     expect(getScrapeProgress(merged).percent).toBe(100);
+  });
+
+  it("returns failed store numbers in queue order for manual retry", () => {
+    const run = createQueuedScrapeRun({
+      runId: "client_run",
+      startedAt: "2026-06-20T00:00:00.000Z",
+      stores: ["2006", "2017", "2020", "2023"],
+    });
+    const failed = createFailedScrapeRun({
+      error: "Browser session closed",
+      finishedAt: "2026-06-20T00:00:30.000Z",
+      startedAt: "2026-06-20T00:00:00.000Z",
+      stores: ["2017", "2023"],
+    });
+    const merged = mergeScrapeRunBatch(run, [finishedRun("2006", 4), failed], {
+      finishedAt: "2026-06-20T00:01:00.000Z",
+    });
+
+    expect(getFailedStoreNumbers(merged)).toEqual(["2017", "2023"]);
   });
 });
