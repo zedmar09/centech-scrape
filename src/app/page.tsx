@@ -1,5 +1,5 @@
-import { PayrollImporter } from "@/components/PayrollImporter";
+import { redirect } from "next/navigation";
 
 export default function Home() {
-  return <PayrollImporter />;
+  redirect("/financial");
 }

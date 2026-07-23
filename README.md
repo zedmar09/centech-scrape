@@ -82,6 +82,37 @@ Each API call scrapes one store. The browser tab owns the queue, so keep the tab
 open until the progress reaches 100%. If you need the scrape to continue after
 closing the tab, move the queue to a durable worker with persistent run state.
 
+## Financial sales scraping
+
+See [Financial Scraper](docs/FINANCIAL_SCRAPER.md) for the complete architecture,
+run lifecycle, concurrency model, exports, and validation notes.
+
+Open **Financial > Sales**, select a date range and organization, then choose
+**Start / Resume Scrape**. Sales work is created date-first as one store/date
+job. The browser runs two Browserless sessions concurrently; each session logs
+in once and processes up to six jobs within a 45-second budget.
+
+Every completed or failed job is streamed to the browser and checkpointed in
+IndexedDB. Reloading the page does not delete checkpoints: select the same
+range and use **Start / Resume Scrape** to continue. **Retry Failed** retries
+failed jobs, while **Reload All** clears that range and scrapes it again.
+
+The results table omits zero-value categories and follows the sales comparison
+template order. Each store/date group ends with a `SUMMARY` row containing its
+total debit, total credit, and balance status. CSV and JSON include those rows.
+
+Browserless free-tier defaults can be tuned with
+`FLEXEPOS_SALES_JOBS_PER_SESSION`; keep the value conservative enough to remain
+below the provider's one-minute session limit.
+
+## Financial royalties scraping
+
+Open **Financial > Royalties** and select the period and organization. Each job
+scrapes one store for the complete date range. The same two-session streaming,
+checkpoint, retry, resume, reload, search, pagination, and download behavior is
+used as Sales. Non-zero rows follow the six-category royalties template order,
+and each store is followed by an inline balanced `SUMMARY` row.
+
 ## Verify
 
 ```bash
