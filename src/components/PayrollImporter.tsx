@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Alert,
   Box,
@@ -58,6 +58,7 @@ import {
   parseStoreNumbersInput,
 } from "@/lib/scrapeRequest";
 import type { TipBreakdownPayload } from "@/lib/tipBreakdownParser";
+import { FinancialWorkspace } from "@/components/FinancialWorkspace";
 
 const theme = createTheme({
   palette: {
@@ -111,6 +112,7 @@ const theme = createTheme({
 
 type ScrapeUiStatus = "idle" | "running" | "complete" | "error";
 type SaveUiStatus = "idle" | "saving" | "saved" | "error";
+type WorkspaceSection = "financial" | "payroll";
 
 const EMPTY_SCRAPE_PROGRESS: ScrapeProgress = {
   completed: 0,
@@ -126,6 +128,8 @@ type ScrapeConfigResponse = {
 };
 
 export function PayrollImporter() {
+  const [activeSection, setActiveSection] =
+    useState<WorkspaceSection>("payroll");
   const [startDateInput, setStartDateInput] = useState("");
   const [endDateInput, setEndDateInput] = useState("");
   const [reportType, setReportType] = useState<FlexeposReportType>("payroll");
@@ -135,6 +139,21 @@ export function PayrollImporter() {
   const [saveStatus, setSaveStatus] = useState<SaveUiStatus>("idle");
   const [saveError, setSaveError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    const syncSectionFromUrl = () => {
+      setActiveSection(window.location.pathname.startsWith("/financial") ? "financial" : "payroll");
+    };
+    syncSectionFromUrl();
+    window.addEventListener("popstate", syncSectionFromUrl);
+    return () => window.removeEventListener("popstate", syncSectionFromUrl);
+  }, []);
+
+  function navigateToSection(section: WorkspaceSection) {
+    const path = section === "financial" ? "/financial" : "/payroll";
+    window.history.pushState({}, "", path);
+    setActiveSection(section);
+  }
 
   const result = useMemo(() => {
     return scrapeRun?.result ?? EMPTY_SCRAPE_PARSE_RESULT;
@@ -453,14 +472,66 @@ export function PayrollImporter() {
     <ThemeProvider theme={theme}>
       <CssBaseline />
       <Box
-        component="main"
         sx={{
+          display: "block",
           minHeight: "100vh",
           bgcolor: "background.default",
-          py: { xs: 3, md: 5 },
         }}
       >
-        <Container maxWidth="xl">
+        <Box
+          component="aside"
+          sx={{
+            width: { xs: "100%", md: 248 },
+            minHeight: { md: "100vh" },
+            height: { md: "100vh" },
+            position: { xs: "static", md: "fixed" },
+            top: 0,
+            left: 0,
+            zIndex: 1200,
+            alignSelf: "flex-start",
+            flexShrink: 0,
+            overflow: "hidden",
+            bgcolor: "#0f2f20",
+            color: "#ffffff",
+            px: 2,
+            py: { xs: 2, md: 3 },
+          }}
+        >
+          <Box sx={{ px: 1, mb: { xs: 2, md: 4 } }}>
+            <Typography sx={{ fontSize: "1.15rem", fontWeight: 800 }}>
+              CenTech
+            </Typography>
+            <Typography sx={{ color: "rgba(255,255,255,0.65)", fontSize: "0.8rem" }}>
+              Flexepos Operations
+            </Typography>
+          </Box>
+          <Stack
+            direction={{ xs: "row", md: "column" }}
+            spacing={1}
+            component="nav"
+            aria-label="Primary navigation"
+          >
+            <SidebarButton
+              active={activeSection === "financial"}
+              label="Financial"
+              onClick={() => navigateToSection("financial")}
+            />
+            <SidebarButton
+              active={activeSection === "payroll"}
+              label="Payroll"
+              onClick={() => navigateToSection("payroll")}
+            />
+          </Stack>
+        </Box>
+
+        <Box component="main" sx={{ ml: { md: "248px" }, width: { xs: "100%", md: "calc(100% - 248px)" }, minWidth: 0, maxWidth: "100%", overflow: "hidden", py: { xs: 3, md: 5 } }}>
+          <Box sx={{ display: activeSection === "financial" ? "block" : "none" }}>
+            <Container maxWidth="xl" sx={{ minWidth: 0 }}>
+              <FinancialWorkspace />
+            </Container>
+          </Box>
+          <Box sx={{ display: activeSection === "payroll" ? "block" : "none" }}>
+          <Container maxWidth="xl" sx={{ minWidth: 0 }}>
           <Stack spacing={3}>
             <Stack
               direction={{ xs: "column", md: "row" }}
@@ -472,11 +543,11 @@ export function PayrollImporter() {
             >
               <Box>
                 <Typography component="h1" variant="h1">
-                  Flexepos Payload Builder
+                  Payroll
                 </Typography>
                 <Typography color="text.secondary" sx={{ mt: 0.75 }}>
-                  Scrape configured stores, inspect the HTML returned by the
-                  site, then review the {resultReportLabel} payload.
+                  Scrape configured stores and review the {resultReportLabel}
+                  payload.
                 </Typography>
               </Box>
 
@@ -690,9 +761,45 @@ export function PayrollImporter() {
               </TableContainer>
             </Paper>
           </Stack>
-        </Container>
+          </Container>
+          </Box>
+        </Box>
       </Box>
     </ThemeProvider>
+  );
+}
+
+function SidebarButton({
+  active,
+  label,
+  onClick,
+}: {
+  active: boolean;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <Button
+      aria-current={active ? "page" : undefined}
+      fullWidth
+      onClick={onClick}
+      sx={{
+        justifyContent: "flex-start",
+        color: "#ffffff",
+        bgcolor: active ? "rgba(255,255,255,0.16)" : "transparent",
+        border: "1px solid",
+        borderColor: active ? "rgba(255,255,255,0.2)" : "transparent",
+        px: 1.5,
+        py: 1.1,
+        "&:hover": {
+          bgcolor: active
+            ? "rgba(255,255,255,0.2)"
+            : "rgba(255,255,255,0.08)",
+        },
+      }}
+    >
+      {label}
+    </Button>
   );
 }
 

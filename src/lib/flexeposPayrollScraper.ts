@@ -78,7 +78,7 @@ type BrowserModule = {
   };
 };
 
-type Browser = {
+export type Browser = {
   close: () => Promise<void>;
   newContext: (options: BrowserContextOptions) => Promise<BrowserContext>;
 };
@@ -94,10 +94,11 @@ type BrowserContextOptions = {
 };
 
 type BrowserContext = {
+  close: () => Promise<void>;
   newPage: () => Promise<Page>;
 };
 
-type Page = {
+export type Page = {
   content: () => Promise<string>;
   evaluate: <TResult, TArg>(
     pageFunction: (arg: TArg) => TResult,
@@ -112,6 +113,7 @@ type Page = {
   setDefaultTimeout: (timeoutMs: number) => void;
   url: () => string;
   waitForTimeout: (timeoutMs: number) => Promise<void>;
+  waitForLoadState: (state?: LoadState) => Promise<void>;
 };
 
 type Locator = {
@@ -119,6 +121,7 @@ type Locator = {
   click: () => Promise<void>;
   fill: (value: string) => Promise<void>;
   first: () => Locator;
+  inputValue: () => Promise<string>;
   isVisible: (options?: { timeout?: number }) => Promise<boolean>;
   waitFor: (options: { state: "visible"; timeout?: number }) => Promise<void>;
 };
@@ -363,7 +366,7 @@ async function scrapeFlexeposStore(
   }
 }
 
-async function ensureAuthenticated(page: Page, config: FlexeposPayrollConfig) {
+export async function ensureAuthenticated(page: Page, config: FlexeposPayrollConfig) {
   const loginUrl = new URL(config.loginPath, config.baseUrl).href;
 
   await gotoWithRetry(page, loginUrl, config);
@@ -433,7 +436,7 @@ function parseFlexeposReportHtml(
   }
 }
 
-async function gotoWithRetry(
+export async function gotoWithRetry(
   page: Page,
   url: string,
   config: FlexeposPayrollConfig,
@@ -458,7 +461,7 @@ async function gotoWithRetry(
   throw lastError;
 }
 
-async function createBrowser(config: FlexeposPayrollConfig): Promise<Browser> {
+export async function createBrowser(config: FlexeposPayrollConfig): Promise<Browser> {
   if (config.browserWsEndpoint) {
     const { chromium } = await importBrowserModule("playwright-core");
 
