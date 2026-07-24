@@ -6,6 +6,12 @@ const nextConfig: NextConfig = {
       "./node_modules/playwright/**/*",
       "./node_modules/playwright-core/**/*",
     ],
+    "/api/sales-scrape": [
+      "./node_modules/playwright-core/**/*",
+    ],
+    "/api/royalties-scrape": [
+      "./node_modules/playwright-core/**/*",
+    ],
   },
   serverExternalPackages: ["playwright", "playwright-core"],
 };

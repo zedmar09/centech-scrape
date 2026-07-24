@@ -463,7 +463,9 @@ export async function gotoWithRetry(
 
 export async function createBrowser(config: FlexeposPayrollConfig): Promise<Browser> {
   if (config.browserWsEndpoint) {
-    const { chromium } = await importBrowserModule("playwright-core");
+    // Keep this import statically analyzable so Next.js/Vercel includes
+    // playwright-core in the serverless function trace.
+    const { chromium } = await import("playwright-core") as BrowserModule;
 
     return config.connectMode === "playwright"
       ? chromium.connect(config.browserWsEndpoint)
@@ -475,7 +477,7 @@ export async function createBrowser(config: FlexeposPayrollConfig): Promise<Brow
   return chromium.launch({ headless: config.headless });
 }
 
-async function importBrowserModule(specifier: "playwright" | "playwright-core") {
+async function importBrowserModule(specifier: "playwright") {
   try {
     const dynamicImport = new Function(
       "specifier",
