@@ -87,6 +87,20 @@ closing the tab, move the queue to a durable worker with persistent run state.
 See [Financial Scraper](docs/FINANCIAL_SCRAPER.md) for the complete architecture,
 run lifecycle, concurrency model, exports, and validation notes.
 
+See [Laravel Fallback Integration Plan](docs/LARAVEL_FALLBACK_INTEGRATION_PLAN.md)
+for the secured server-to-server endpoints, Laravel queue contract, and rollout.
+
+Laravel can submit short authenticated batches to:
+
+```text
+POST /api/internal/flexepos/sales
+POST /api/internal/flexepos/royalties
+```
+
+Set the same `FLEXEPOS_SCRAPER_API_TOKEN` in Laravel and Vercel, then send it as
+an `Authorization: Bearer ...` header. These endpoints return NDJSON and preserve
+Laravel's `request_id` and `job_id` in all applicable events.
+
 Open **Financial > Sales**, select a date range and organization, then choose
 **Start / Resume Scrape**. Sales work is created date-first as one store/date
 job. The browser runs two Browserless sessions concurrently; each session logs

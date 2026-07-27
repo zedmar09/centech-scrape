@@ -28,7 +28,6 @@ import {
   Typography,
 } from "@mui/material";
 
-import flexeposConfig from "../config/flexepos.config.json";
 import {
   checkpointFromFailure,
   loadSalesCheckpoints,
@@ -58,6 +57,7 @@ import {
   type RoyaltyRow,
 } from "@/lib/royaltyReport";
 import { buildFinancialExport } from "@/lib/financialExport";
+import { financialStores } from "@/lib/financialStores";
 import {
   createFinancialRun,
   deleteFinancialRun,
@@ -66,15 +66,10 @@ import {
   type FinancialRun,
 } from "@/lib/financialRuns";
 
-const AUSTIN_STORES = [
-  "4028", "4041", "4055", "4062", "4064", "4071", "4078", "4079", "4089",
-  "5124", "10013", "10023", "37017", "37019",
-];
 const JOBS_PER_SESSION = 6;
 const MAX_ATTEMPTS = 2;
 const PAGE_SIZE = 200;
 const ACTIVITY_PAGE_SIZE = 50;
-const EXCLUDED_CENTURY_FINANCIAL_STORES = new Set(["4083"]);
 
 type SalesStreamEvent = {
   type: string;
@@ -271,12 +266,7 @@ export function FinancialWorkspace() {
         endDate,
         organization,
         startDate,
-        stores:
-          organization === "century"
-            ? flexeposConfig.storeNumbers.filter(
-                (store) => !EXCLUDED_CENTURY_FINANCIAL_STORES.has(store),
-              )
-            : AUSTIN_STORES,
+        stores: [...financialStores(organization)],
       });
       expectedJobs = allJobs.length;
       setTotalJobs(allJobs.length);
@@ -332,12 +322,7 @@ export function FinancialWorkspace() {
         organization,
         startDate,
         endDate,
-        stores:
-          organization === "century"
-            ? flexeposConfig.storeNumbers.filter(
-                (store) => !EXCLUDED_CENTURY_FINANCIAL_STORES.has(store),
-              )
-            : AUSTIN_STORES,
+        stores: [...financialStores(organization)],
       });
       expectedJobs = allJobs.length;
       setRoyaltyTotalJobs(allJobs.length);
@@ -524,9 +509,7 @@ export function FinancialWorkspace() {
         organization: run.organization,
         startDate: run.start_date,
         endDate: run.end_date,
-        stores: run.organization === "century"
-          ? flexeposConfig.storeNumbers.filter((store) => !EXCLUDED_CENTURY_FINANCIAL_STORES.has(store))
-          : AUSTIN_STORES,
+        stores: [...financialStores(run.organization)],
       }).length);
     } else {
       const saved = await loadRoyaltyCheckpoints(run.id);
@@ -548,9 +531,7 @@ export function FinancialWorkspace() {
         organization: run.organization,
         startDate: run.start_date,
         endDate: run.end_date,
-        stores: run.organization === "century"
-          ? flexeposConfig.storeNumbers.filter((store) => !EXCLUDED_CENTURY_FINANCIAL_STORES.has(store))
-          : AUSTIN_STORES,
+        stores: [...financialStores(run.organization)],
       }).length);
     }
   }
