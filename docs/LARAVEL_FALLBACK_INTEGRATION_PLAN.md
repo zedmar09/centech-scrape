@@ -185,6 +185,68 @@ secured and versioned instead of adding new paths. Dedicated `/api/internal`
 paths are preferable because they clearly separate server-to-server access from
 browser UI calls.
 
+## Current implementation and edge-case behavior
+
+The dedicated Laravel-facing endpoints are implemented:
+
+```text
+POST /api/internal/flexepos/sales
+POST /api/internal/flexepos/royalties
+```
+
+Both routes:
+
+- require `Authorization: Bearer <FLEXEPOS_SCRAPER_API_TOKEN>`;
+- return `503` when the deployment has no configured token;
+- return `401` for a missing or incorrect token;
+- require `Content-Type: application/json`;
+- reject request bodies larger than 64 KB while they are being streamed;
+- require one to six unique jobs;
+- reject duplicate job IDs and duplicate natural store/date or store/range jobs;
+- validate real calendar dates, including leap years;
+- validate attempts as integers from 1 through 10;
+- reject Century store `4083` and all other stores outside the committed
+  Financial store configuration;
+- return validation failures before opening a Browserless connection; and
+- stream normalized NDJSON without buffering the complete scrape result.
+
+An upstream timeout or connection failure can end the stream without a terminal
+event for every requested job. Laravel must compare the requested `job_id`
+values with the received `job_completed` and `job_failed` events. Any job
+without a terminal event remains incomplete and must be requeued according to
+the retry policy.
+
+The NDJSON consumer must not assume that one HTTP chunk equals one JSON event.
+It must buffer through newline boundaries and also process a final valid line
+when the stream closes without a trailing newline.
+
+### Transitional security limitation
+
+The bearer token protects the two `/api/internal/flexepos/*` routes only. The
+existing browser UI still calls `/api/sales-scrape` and
+`/api/royalties-scrape`, so those legacy routes remain browser-accessible during
+this transition. Moving the Financial UI to Laravel should be followed by
+removing or separately protecting the legacy routes. Until then, the deployment
+must not be described as having every Browserless entry point protected by the
+internal token.
+
+### Verification
+
+The endpoint unit tests cover authentication, body limits, malformed JSON,
+unsupported content types, configured-store validation, duplicate jobs,
+calendar/leap-date validation, royalty range ordering, decimal normalization,
+NDJSON chunk boundaries, final lines without trailing newlines, and upstream
+error passthrough.
+
+Run the checks with:
+
+```bash
+npm test
+npm run lint
+npx tsc --noEmit
+npm run build
+```
+
 ## Phase 3: Laravel database model
 
 ### `financial_scrape_runs`

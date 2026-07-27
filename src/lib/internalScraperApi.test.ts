@@ -5,6 +5,7 @@ import {
   parseInternalRoyaltyRequest,
   parseInternalSalesRequest,
   readLimitedJsonRequest,
+  transformNdjsonResponse,
   transformRoyaltyEvent,
   transformSalesEvent,
 } from "./internalScraperApi";
@@ -72,6 +73,28 @@ describe("internal scraper API", () => {
     expect(wrongType).toMatchObject({ ok: false, status: 415 });
   });
 
+  it("stops reading a chunked request as soon as it exceeds the body limit", async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"value":"'));
+        controller.enqueue(new TextEncoder().encode("1234567890"));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const result = await readLimitedJsonRequest(new Request("https://example.test", {
+      method: "POST",
+      body,
+      duplex: "half",
+      headers: { "content-type": "application/json" },
+    } as RequestInit & { duplex: "half" }), 12);
+
+    expect(result).toMatchObject({ ok: false, status: 413 });
+    expect(cancelled).toBe(true);
+  });
+
   it("strictly validates Sales jobs", () => {
     expect(parseInternalSalesRequest(salesRequest)).toEqual({
       ok: true,
@@ -109,6 +132,27 @@ describe("internal scraper API", () => {
       ok: false,
       error: "jobs must not contain more than 6 jobs.",
     });
+
+    const duplicateStoreDate = {
+      ...salesRequest,
+      jobs: [
+        salesRequest.jobs[0],
+        { ...salesRequest.jobs[0], job_id: "job-2" },
+      ],
+    };
+    expect(parseInternalSalesRequest(duplicateStoreDate)).toEqual({
+      ok: false,
+      error: "jobs.1 duplicates another store/date job.",
+    });
+
+    expect(parseInternalSalesRequest({
+      ...salesRequest,
+      jobs: [{ ...salesRequest.jobs[0], business_date: "2028-02-29" }],
+    })).toMatchObject({ ok: true });
+    expect(parseInternalSalesRequest({
+      ...salesRequest,
+      jobs: [{ ...salesRequest.jobs[0], business_date: "2027-02-29" }],
+    })).toMatchObject({ ok: false });
   });
 
   it("validates Royalty ranges", () => {
@@ -191,5 +235,34 @@ describe("internal scraper API", () => {
         credit: null,
       }],
     });
+  });
+
+  it("transforms NDJSON split across chunks and a final line without a newline", async () => {
+    const encoder = new TextEncoder();
+    const upstream = new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('{"type":"job_sta'));
+        controller.enqueue(encoder.encode('rted"}\n{"type":"session_completed"}'));
+        controller.close();
+      },
+    }), {
+      headers: { "content-type": "application/x-ndjson" },
+    });
+
+    const transformed = transformNdjsonResponse(upstream, (event) => ({
+      ...(event as Record<string, unknown>),
+      request_id: "request-1",
+    }));
+
+    expect(transformed.headers.get("content-type")).toBe("application/x-ndjson; charset=utf-8");
+    expect(await transformed.text()).toBe(
+      '{"type":"job_started","request_id":"request-1"}\n' +
+      '{"type":"session_completed","request_id":"request-1"}\n',
+    );
+  });
+
+  it("passes through non-success upstream responses", () => {
+    const upstream = Response.json({ error: "upstream failed" }, { status: 503 });
+    expect(transformNdjsonResponse(upstream, (event) => event)).toBe(upstream);
   });
 });

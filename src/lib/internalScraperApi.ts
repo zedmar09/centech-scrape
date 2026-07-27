@@ -47,10 +47,25 @@ export async function readLimitedJsonRequest(request: Request, maxBytes = 64 * 1
   if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
     return { ok: false as const, error: `Request body must not exceed ${maxBytes} bytes.`, status: 413 };
   }
-  const body = await request.text();
-  if (new TextEncoder().encode(body).byteLength > maxBytes) {
-    return { ok: false as const, error: `Request body must not exceed ${maxBytes} bytes.`, status: 413 };
+
+  const reader = request.body?.getReader();
+  const decoder = new TextDecoder();
+  let body = "";
+  let receivedBytes = 0;
+  if (reader) {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      receivedBytes += value.byteLength;
+      if (receivedBytes > maxBytes) {
+        await reader.cancel("Request body exceeded the configured limit.");
+        return { ok: false as const, error: `Request body must not exceed ${maxBytes} bytes.`, status: 413 };
+      }
+      body += decoder.decode(value, { stream: true });
+    }
+    body += decoder.decode();
   }
+
   try {
     return { ok: true as const, value: JSON.parse(body) as unknown };
   } catch {
