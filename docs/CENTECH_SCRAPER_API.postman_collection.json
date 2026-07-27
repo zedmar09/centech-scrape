@@ -1,0 +1,114 @@
+{
+  "info": {
+    "_postman_id": "0d23d999-6052-48cf-9cb9-ebeb10cb1812",
+    "name": "CenTech Flexepos Fallback API",
+    "description": "Test the authenticated Laravel-facing Sales and Royalties scraper endpoints. Update the collection variables before sending a request. Responses are streamed as NDJSON, with one JSON event per line.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Scrape Sales",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{api_token}}",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          },
+          {
+            "key": "Accept",
+            "value": "application/x-ndjson",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"request_id\": \"postman-sales-{{$timestamp}}\",\n  \"jobs\": [\n    {\n      \"job_id\": \"sales-2006-20260701-{{$timestamp}}\",\n      \"organization\": \"century\",\n      \"business_date\": \"2026-07-01\",\n      \"store_number\": \"2006\",\n      \"attempt\": 1\n    },\n    {\n      \"job_id\": \"sales-2016-20260701-{{$timestamp}}\",\n      \"organization\": \"century\",\n      \"business_date\": \"2026-07-01\",\n      \"store_number\": \"2016\",\n      \"attempt\": 1\n    }\n  ]\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{base_url}}/api/internal/flexepos/sales",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "internal",
+            "flexepos",
+            "sales"
+          ]
+        },
+        "description": "Scrapes one business date for each requested store. Send one to six unique store/date jobs."
+      },
+      "response": []
+    },
+    {
+      "name": "Scrape Royalties",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{api_token}}",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          },
+          {
+            "key": "Accept",
+            "value": "application/x-ndjson",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"request_id\": \"postman-royalties-{{$timestamp}}\",\n  \"jobs\": [\n    {\n      \"job_id\": \"royalties-2006-20260701-20260720-{{$timestamp}}\",\n      \"organization\": \"century\",\n      \"start_date\": \"2026-07-01\",\n      \"end_date\": \"2026-07-20\",\n      \"store_number\": \"2006\",\n      \"attempt\": 1\n    }\n  ]\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{base_url}}/api/internal/flexepos/royalties",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "internal",
+            "flexepos",
+            "royalties"
+          ]
+        },
+        "description": "Scrapes one date range for each requested store. Send one to six unique store/range jobs."
+      },
+      "response": []
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:3000",
+      "type": "string"
+    },
+    {
+      "key": "api_token",
+      "value": "replace-with-FLEXEPOS_SCRAPER_API_TOKEN",
+      "type": "secret"
+    }
+  ]
+}

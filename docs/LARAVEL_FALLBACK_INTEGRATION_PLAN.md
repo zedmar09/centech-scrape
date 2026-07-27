@@ -19,6 +19,10 @@ POST /api/internal/flexepos/royalties
 They connect to Browserless, log in to Flexepos, scrape the requested jobs, and
 stream the results back to Laravel as newline-delimited JSON (NDJSON).
 
+For manual testing, import
+[`CENTECH_SCRAPER_API.postman_collection.json`](./CENTECH_SCRAPER_API.postman_collection.json)
+into Postman, then set its `base_url` and `api_token` collection variables.
+
 ## Authentication
 
 Configure the same secret in the Vercel and Laravel environments:
