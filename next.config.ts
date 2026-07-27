@@ -12,6 +12,12 @@ const nextConfig: NextConfig = {
     "/api/royalties-scrape": [
       "./node_modules/playwright-core/**/*",
     ],
+    "/api/internal/flexepos/sales": [
+      "./node_modules/playwright-core/**/*",
+    ],
+    "/api/internal/flexepos/royalties": [
+      "./node_modules/playwright-core/**/*",
+    ],
   },
   serverExternalPackages: ["playwright", "playwright-core"],
 };
