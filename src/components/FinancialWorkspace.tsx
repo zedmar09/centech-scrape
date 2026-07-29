@@ -66,7 +66,8 @@ import {
   type FinancialRun,
 } from "@/lib/financialRuns";
 
-const JOBS_PER_SESSION = 6;
+const SALES_JOBS_PER_SESSION = 3;
+const ROYALTY_JOBS_PER_SESSION = 6;
 const MAX_ATTEMPTS = 2;
 const PAGE_SIZE = 200;
 const ACTIVITY_PAGE_SIZE = 50;
@@ -354,7 +355,7 @@ export function FinancialWorkspace() {
     const queue = [...initial];
     async function worker() {
       while (queue.length && !pauseRequested.current && !cancelRequested.current) {
-        const jobs = queue.splice(0, JOBS_PER_SESSION).map((job) => ({ ...job, attempts: job.attempts + 1 }));
+        const jobs = queue.splice(0, ROYALTY_JOBS_PER_SESSION).map((job) => ({ ...job, attempts: job.attempts + 1 }));
         markJobsQueued(jobs);
         const settled = new Set<string>();
         const controller = new AbortController();
@@ -419,7 +420,7 @@ export function FinancialWorkspace() {
 
     async function worker() {
       while (queue.length > 0 && !pauseRequested.current && !cancelRequested.current) {
-        const jobs = queue.splice(0, JOBS_PER_SESSION).map((job) => ({
+        const jobs = queue.splice(0, SALES_JOBS_PER_SESSION).map((job) => ({
           ...job,
           attempts: job.attempts + 1,
         }));

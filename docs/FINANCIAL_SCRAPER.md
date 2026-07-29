@@ -47,14 +47,14 @@ Each Playwright context has independent cookies, storage, pages, and Flexepos
 authentication. This satisfies the Flexepos requirement that simultaneous
 reports use separate authenticated sessions.
 
-Each Browserless connection receives up to six store/date jobs. Its three
-contexts process those jobs from a shared queue while remaining within a
-45-second worker budget and the Browserless one-minute session limit.
+Each Browserless connection receives up to three store/date jobs. Its three
+contexts process those jobs concurrently while remaining within a 45-second
+worker budget and the Browserless one-minute session limit.
 
 The relevant optional settings are:
 
 ```env
-FLEXEPOS_SALES_JOBS_PER_SESSION=6
+FLEXEPOS_SALES_JOBS_PER_SESSION=3
 FLEXEPOS_CONTEXTS_PER_BROWSER=3
 ```
 

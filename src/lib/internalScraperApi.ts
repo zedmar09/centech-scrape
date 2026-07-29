@@ -5,7 +5,7 @@ import { isConfiguredFinancialStore } from "./financialStores";
 import { royaltyJobKey, type RoyaltyJob } from "./royaltyReport";
 import { salesJobKey, type SalesJob, type SalesOrganization } from "./salesReport";
 
-export const INTERNAL_SALES_JOB_LIMIT = 6;
+export const INTERNAL_SALES_JOB_LIMIT = 3;
 export const INTERNAL_ROYALTY_JOB_LIMIT = 6;
 
 export type InternalSalesJob = {

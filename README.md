@@ -104,7 +104,8 @@ Laravel's `request_id` and `job_id` in all applicable events.
 Open **Financial > Sales**, select a date range and organization, then choose
 **Start / Resume Scrape**. Sales work is created date-first as one store/date
 job. The browser runs two Browserless sessions concurrently; each session logs
-in once and processes up to six jobs within a 45-second budget.
+in once and processes three jobs concurrently within a 45-second budget. This
+produces six active Sales jobs across the two Browserless connections.
 
 Every completed or failed job is streamed to the browser and checkpointed in
 IndexedDB. Reloading the page does not delete checkpoints: select the same

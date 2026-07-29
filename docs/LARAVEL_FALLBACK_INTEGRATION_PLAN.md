@@ -54,7 +54,8 @@ POST /api/internal/flexepos/sales
 ```
 
 A Sales job represents one store and one business date. Send between one and
-six unique jobs per request.
+three unique jobs per request. One request opens one Browserless connection,
+and its three isolated Flexepos sessions process those three jobs concurrently.
 
 ```json
 {
@@ -136,7 +137,7 @@ them into decimal database columns without using floating-point arithmetic.
 Laravel should:
 
 1. Create a unique `request_id` for the batch and `job_id` for every job.
-2. Send no more than six jobs in one request.
+2. Send no more than three Sales jobs in one request.
 3. Keep no more than two scraper requests active at once.
 4. Read and process the NDJSON response incrementally.
 5. Save each `job_completed` result in a database transaction.

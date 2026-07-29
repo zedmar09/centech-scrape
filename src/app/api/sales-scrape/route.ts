@@ -18,7 +18,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-const DEFAULT_MAX_JOBS = 6;
+const DEFAULT_MAX_JOBS = 3;
 const MAX_JOBS = 10;
 const DEFAULT_CONTEXTS_PER_BROWSER = 3;
 const MAX_CONTEXTS_PER_BROWSER = 4;

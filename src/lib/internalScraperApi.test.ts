@@ -123,14 +123,14 @@ describe("internal scraper API", () => {
 
     expect(parseInternalSalesRequest({
       ...salesRequest,
-      jobs: Array.from({ length: 7 }, (_, index) => ({
+      jobs: Array.from({ length: 4 }, (_, index) => ({
         ...salesRequest.jobs[0],
         business_date: `2026-07-${String(index + 1).padStart(2, "0")}`,
         job_id: `job-${index}`,
       })),
     })).toEqual({
       ok: false,
-      error: "jobs must not contain more than 6 jobs.",
+      error: "jobs must not contain more than 3 jobs.",
     });
 
     const duplicateStoreDate = {

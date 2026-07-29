@@ -48,7 +48,7 @@
             "sales"
           ]
         },
-        "description": "Scrapes one business date for each requested store. Send one to six unique store/date jobs."
+        "description": "Scrapes one business date for each requested store. Send one to three unique store/date jobs; all three run concurrently in isolated Flexepos sessions."
       },
       "response": []
     },
