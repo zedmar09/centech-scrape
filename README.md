@@ -44,6 +44,15 @@ one-store scrape requests at a time, waits for both to finish, merges their
 payload rows, updates the progress bar, and continues with the next two stores
 until every store is done or marked as failed.
 
+For Payroll runs, each successful store-summary scrape is followed by an
+employee timeclock detail session. Employee results are streamed back as they
+finish and checkpointed in IndexedDB, keyed by run, store, pay period, and
+employee ID (falling back to employee number). A store is complete only when
+every employee discovered in its Payroll summary has a completed Adjust Time
+result. Retrying a failed store skips completed employee checkpoints and
+requests only failed or missing employees. A valid Adjust Time table with no
+rows counts as completed; a missing table or mismatched pay period does not.
+
 Supported report payloads:
 
 ```json

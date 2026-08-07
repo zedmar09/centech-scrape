@@ -34,6 +34,16 @@ import {
 
 import type { PayrollPayload } from "@/lib/payrollParser";
 import {
+  loadPayrollTimeclockCheckpoints,
+  savePayrollTimeclockCheckpoint,
+} from "@/lib/payrollTimeclockCheckpoints";
+import {
+  employeeKey,
+  reconcileTimeclocks,
+  type EmployeeTimeclockCheckpoint,
+  type PayrollEmployeeRef,
+} from "@/lib/payrollTimeclocks";
+import {
   EMPTY_SCRAPE_PARSE_RESULT,
   FLEXEPOS_REPORT_OPTIONS,
   type FlexeposReportOption,
@@ -112,7 +122,7 @@ const theme = createTheme({
 
 type ScrapeUiStatus = "idle" | "running" | "complete" | "error";
 type SaveUiStatus = "idle" | "saving" | "saved" | "error";
-type WorkspaceSection = "financial" | "payroll";
+type WorkspaceSection = "financial" | "payroll" | "payroll-v2";
 
 const EMPTY_SCRAPE_PROGRESS: ScrapeProgress = {
   completed: 0,
@@ -142,7 +152,14 @@ export function PayrollImporter() {
 
   useEffect(() => {
     const syncSectionFromUrl = () => {
-      setActiveSection(window.location.pathname.startsWith("/financial") ? "financial" : "payroll");
+      const pathname = window.location.pathname;
+      setActiveSection(
+        pathname.startsWith("/financial")
+          ? "financial"
+          : pathname.startsWith("/payroll-v2")
+            ? "payroll-v2"
+            : "payroll",
+      );
     };
     syncSectionFromUrl();
     window.addEventListener("popstate", syncSectionFromUrl);
@@ -150,8 +167,21 @@ export function PayrollImporter() {
   }, []);
 
   function navigateToSection(section: WorkspaceSection) {
-    const path = section === "financial" ? "/financial" : "/payroll";
+    const path =
+      section === "financial"
+        ? "/financial"
+        : section === "payroll-v2"
+          ? "/payroll-v2"
+          : "/payroll";
     window.history.pushState({}, "", path);
+    if (
+      section !== activeSection &&
+      section !== "financial" &&
+      activeSection !== "financial"
+    ) {
+      clearScrapeResults();
+    }
+    if (section === "payroll-v2") setReportType("payroll");
     setActiveSection(section);
   }
 
@@ -284,11 +314,15 @@ export function PayrollImporter() {
     {
       endDate,
       reportType,
+      includeTimeclocks,
+      runId,
       startedAt,
       startDate,
     }: {
       endDate: string;
       reportType: FlexeposReportType;
+      includeTimeclocks: boolean;
+      runId: string;
       startedAt: string;
       startDate: string;
     },
@@ -313,7 +347,19 @@ export function PayrollImporter() {
         throw new Error(await readApiError(response));
       }
 
-      return (await response.json()) as PayrollScrapeRun;
+      const run = (await response.json()) as PayrollScrapeRun;
+      if (reportType === "payroll" && includeTimeclocks) {
+        const timeclocks = await scrapeTimeclocksForStore({
+          endDate,
+          runId,
+          startDate,
+          storeNumber,
+        });
+        run.store_results = run.store_results.map((store) =>
+          store.store_number === storeNumber ? { ...store, timeclocks } : store,
+        );
+      }
+      return run;
     } catch (caught) {
       return createFailedScrapeRun({
         error:
@@ -351,6 +397,7 @@ export function PayrollImporter() {
 
       workingRun = await runStoreBatches({
         batchSize,
+        includeTimeclocks: activeSection === "payroll-v2",
         reportType: selectedReportType,
         run: workingRun,
         startedAt,
@@ -384,6 +431,7 @@ export function PayrollImporter() {
 
       await runStoreBatches({
         batchSize: DEFAULT_SCRAPE_BATCH_SIZE,
+        includeTimeclocks: activeSection === "payroll-v2",
         reportType: selectedReportType,
         run: scrapeRun,
         startedAt: new Date().toISOString(),
@@ -401,12 +449,14 @@ export function PayrollImporter() {
 
   async function runStoreBatches({
     batchSize,
+    includeTimeclocks,
     reportType,
     run,
     startedAt,
     stores,
   }: {
     batchSize: number;
+    includeTimeclocks: boolean;
     reportType: FlexeposReportType;
     run: PayrollScrapeRun;
     startedAt: string;
@@ -422,7 +472,9 @@ export function PayrollImporter() {
         batch.map((storeNumber) =>
           scrapeSingleStore(storeNumber, {
             endDate: endDateInput,
+            includeTimeclocks,
             reportType,
+            runId: run.run_id,
             startDate: startDateInput,
             startedAt,
           }),
@@ -436,6 +488,87 @@ export function PayrollImporter() {
     }
 
     return workingRun;
+  }
+
+  async function scrapeTimeclocksForStore({
+    endDate,
+    runId,
+    startDate,
+    storeNumber,
+  }: {
+    endDate: string;
+    runId: string;
+    startDate: string;
+    storeNumber: string;
+  }) {
+    const existing = (await loadPayrollTimeclockCheckpoints(runId)).filter(
+      (record) => String(record.store_number) === storeNumber,
+    );
+    const completedKeys = existing
+      .filter((record) => record.status === "completed")
+      .map(employeeKey)
+      .filter((key): key is string => key !== null);
+    const response = await fetch("/api/payroll-timeclocks-scrape", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        completed_employee_keys: completedKeys,
+        end_date: endDate,
+        run_id: runId,
+        start_date: startDate,
+        store_number: storeNumber,
+      }),
+    });
+    if (!response.ok || !response.body) throw new Error(await readApiError(response));
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let expected: PayrollEmployeeRef[] = [];
+    let sessionError: string | null = null;
+    const latest = new Map(existing.map((record) => [employeeKey(record), record]));
+
+    const processEvent = async (line: string) => {
+      const event = JSON.parse(line) as {
+        type?: string;
+        expected?: PayrollEmployeeRef[];
+        checkpoint?: EmployeeTimeclockCheckpoint;
+        error?: string;
+      };
+      if (event.type === "employee_list" && Array.isArray(event.expected)) {
+        expected = event.expected;
+      } else if (event.type === "employee_checkpoint" && event.checkpoint) {
+        const identity = employeeKey(event.checkpoint);
+        const previous = identity ? latest.get(identity) : undefined;
+        const checkpoint = {
+          ...event.checkpoint,
+          attempts: (previous?.attempts ?? 0) + 1,
+        };
+        await savePayrollTimeclockCheckpoint(checkpoint);
+        if (identity) latest.set(identity, checkpoint);
+      } else if (event.type === "session_failed") {
+        sessionError = event.error ?? "Payroll timeclock session failed.";
+      }
+    };
+
+    while (true) {
+      const { done, value } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) if (line.trim()) await processEvent(line);
+      if (done) break;
+    }
+    if (buffer.trim()) await processEvent(buffer);
+    if (sessionError) throw new Error(sessionError);
+
+    const completion = reconcileTimeclocks(expected, [...latest.values()]);
+    if (!completion.complete) {
+      throw new Error(
+        `Timeclocks incomplete: ${completion.failed.length} failed, ${completion.missing.length} missing, ${completion.unavailable.length} unavailable.`,
+      );
+    }
+    return { completed: completion.completed.length, expected: expected.length };
   }
 
   async function savePayload() {
@@ -521,6 +654,11 @@ export function PayrollImporter() {
               label="Payroll"
               onClick={() => navigateToSection("payroll")}
             />
+            <SidebarButton
+              active={activeSection === "payroll-v2"}
+              label="Payroll V2"
+              onClick={() => navigateToSection("payroll-v2")}
+            />
           </Stack>
         </Box>
 
@@ -530,7 +668,7 @@ export function PayrollImporter() {
               <FinancialWorkspace />
             </Container>
           </Box>
-          <Box sx={{ display: activeSection === "payroll" ? "block" : "none" }}>
+          <Box sx={{ display: activeSection === "payroll" || activeSection === "payroll-v2" ? "block" : "none" }}>
           <Container maxWidth="xl" sx={{ minWidth: 0 }}>
           <Stack spacing={3}>
             <Stack
@@ -543,11 +681,12 @@ export function PayrollImporter() {
             >
               <Box>
                 <Typography component="h1" variant="h1">
-                  Payroll
+                  {activeSection === "payroll-v2" ? "Payroll V2" : "Payroll"}
                 </Typography>
                 <Typography color="text.secondary" sx={{ mt: 0.75 }}>
-                  Scrape configured stores and review the {resultReportLabel}
-                  payload.
+                  {activeSection === "payroll-v2"
+                    ? `Scrape employee totals and checkpoint every ${resultReportLabel} timeclock detail.`
+                    : `Scrape configured stores and review the ${resultReportLabel} payload.`}
                 </Typography>
               </Box>
 
@@ -590,7 +729,11 @@ export function PayrollImporter() {
             <ScrapePanel
               endDateInput={endDateInput}
               hasInvalidDateRange={hasInvalidScrapeDateRange}
-              reportOptions={FLEXEPOS_REPORT_OPTIONS}
+              reportOptions={
+                activeSection === "payroll-v2"
+                  ? FLEXEPOS_REPORT_OPTIONS.filter((option) => option.type === "payroll")
+                  : FLEXEPOS_REPORT_OPTIONS
+              }
               reportType={reportType}
               scrapeRun={scrapeRun}
               scrapeProgress={scrapeProgress}
@@ -1065,6 +1208,7 @@ function ScrapeStoreTable({
             <TableCell>Status</TableCell>
             <TableCell align="right">Rows</TableCell>
             <TableCell align="right">Sections</TableCell>
+            <TableCell align="right">Timeclocks</TableCell>
             <TableCell>Notes</TableCell>
             <TableCell align="right">Action</TableCell>
           </TableRow>
@@ -1083,6 +1227,11 @@ function ScrapeStoreTable({
               </TableCell>
               <TableCell align="right">{store.rows}</TableCell>
               <TableCell align="right">{store.sections}</TableCell>
+              <TableCell align="right">
+                {store.timeclocks
+                  ? `${store.timeclocks.completed}/${store.timeclocks.expected}`
+                  : "-"}
+              </TableCell>
               <TableCell sx={{ color: "text.secondary" }}>
                 {getScrapeStoreNote(store)}
               </TableCell>

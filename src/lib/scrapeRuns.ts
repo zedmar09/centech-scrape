@@ -15,6 +15,10 @@ export type PayrollScrapeStoreResult = {
   warnings: string[];
   scraped_html: string | null;
   error?: string;
+  timeclocks?: {
+    completed: number;
+    expected: number;
+  };
 };
 
 export type PayrollScrapeRunStatus = "running" | "done" | "completed_with_errors";

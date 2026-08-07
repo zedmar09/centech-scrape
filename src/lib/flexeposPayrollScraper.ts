@@ -401,7 +401,7 @@ async function isLoggedIn(page: Page, config: FlexeposPayrollConfig) {
     .catch(() => false);
 }
 
-async function findReportUrl(page: Page, config: FlexeposPayrollConfig) {
+export async function findReportUrl(page: Page, config: FlexeposPayrollConfig) {
   const links = await page.evaluate(
     ({ baseUrl }) => {
       return [...document.querySelectorAll<HTMLAnchorElement>("a[href]")]
