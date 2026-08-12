@@ -52,6 +52,9 @@ every employee discovered in its Payroll summary has a completed Adjust Time
 result. Retrying a failed store skips completed employee checkpoints and
 requests only failed or missing employees. A valid Adjust Time table with no
 rows counts as completed; a missing table or mismatched pay period does not.
+Payroll V2 also displays a live elapsed timer for the complete scrape and a
+duration for each completed store timeclock session. Each employee checkpoint
+records its own `duration_ms` for detailed benchmarking in IndexedDB.
 
 Supported report payloads:
 

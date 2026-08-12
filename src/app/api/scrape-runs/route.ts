@@ -91,6 +91,7 @@ export async function POST(request: NextRequest) {
               reportType,
               startDate,
             }),
+            signal: request.signal,
           })
         : await runPayrollScrape({
             stores,

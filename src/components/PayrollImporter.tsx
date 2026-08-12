@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Box,
@@ -34,11 +34,16 @@ import {
 
 import type { PayrollPayload } from "@/lib/payrollParser";
 import {
+  deletePayrollV2Run,
+  loadPayrollV2Runs,
   loadPayrollTimeclockCheckpoints,
+  savePayrollV2Run,
   savePayrollTimeclockCheckpoint,
+  type PayrollV2RunStatus,
 } from "@/lib/payrollTimeclockCheckpoints";
 import {
   employeeKey,
+  formatElapsedTime,
   reconcileTimeclocks,
   type EmployeeTimeclockCheckpoint,
   type PayrollEmployeeRef,
@@ -120,7 +125,7 @@ const theme = createTheme({
   },
 });
 
-type ScrapeUiStatus = "idle" | "running" | "complete" | "error";
+type ScrapeUiStatus = "idle" | "running" | "paused" | "complete" | "error";
 type SaveUiStatus = "idle" | "saving" | "saved" | "error";
 type WorkspaceSection = "financial" | "payroll" | "payroll-v2";
 
@@ -149,6 +154,47 @@ export function PayrollImporter() {
   const [saveStatus, setSaveStatus] = useState<SaveUiStatus>("idle");
   const [saveError, setSaveError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [benchmarkElapsedMs, setBenchmarkElapsedMs] = useState(0);
+  const benchmarkStartedAt = useRef<number | null>(null);
+  const benchmarkBaseMs = useRef(0);
+  const activeControllers = useRef(new Set<AbortController>());
+  const cancelRequested = useRef(false);
+  const restoredPayrollV2 = useRef(false);
+
+  useEffect(() => {
+    if (scrapeStatus !== "running" || benchmarkStartedAt.current === null) return;
+    const updateElapsed = () => {
+      if (benchmarkStartedAt.current !== null) {
+        setBenchmarkElapsedMs(
+          benchmarkBaseMs.current + Date.now() - benchmarkStartedAt.current,
+        );
+      }
+    };
+    updateElapsed();
+    const timer = window.setInterval(updateElapsed, 250);
+    return () => window.clearInterval(timer);
+  }, [scrapeStatus]);
+
+  function startBenchmark(previousElapsedMs = 0) {
+    benchmarkBaseMs.current = previousElapsedMs;
+    benchmarkStartedAt.current = Date.now();
+    setBenchmarkElapsedMs(previousElapsedMs);
+  }
+
+  function finishBenchmark() {
+    if (benchmarkStartedAt.current !== null) {
+      setBenchmarkElapsedMs(
+        benchmarkBaseMs.current + Date.now() - benchmarkStartedAt.current,
+      );
+      benchmarkStartedAt.current = null;
+    }
+  }
+
+  function currentBenchmarkElapsed() {
+    return benchmarkStartedAt.current === null
+      ? benchmarkBaseMs.current
+      : benchmarkBaseMs.current + Date.now() - benchmarkStartedAt.current;
+  }
 
   useEffect(() => {
     const syncSectionFromUrl = () => {
@@ -165,6 +211,35 @@ export function PayrollImporter() {
     window.addEventListener("popstate", syncSectionFromUrl);
     return () => window.removeEventListener("popstate", syncSectionFromUrl);
   }, []);
+
+  useEffect(() => {
+    if (activeSection !== "payroll-v2") {
+      restoredPayrollV2.current = false;
+      return;
+    }
+    if (restoredPayrollV2.current) return;
+    restoredPayrollV2.current = true;
+    void loadPayrollV2Runs().then(async ([latest]) => {
+      if (!latest) return;
+      const restoredStatus = latest.status === "running" ? "paused" : latest.status;
+      const restoredRecord = restoredStatus === latest.status
+        ? latest
+        : { ...latest, status: restoredStatus, updated_at: new Date().toISOString() };
+      if (restoredRecord !== latest) await savePayrollV2Run(restoredRecord);
+      setStartDateInput(latest.start_date);
+      setEndDateInput(latest.end_date);
+      setScrapeRun(latest.run);
+      setBenchmarkElapsedMs(latest.elapsed_ms);
+      benchmarkBaseMs.current = latest.elapsed_ms;
+      setScrapeStatus(
+        restoredStatus === "completed" || restoredStatus === "completed_with_errors"
+          ? "complete"
+          : "paused",
+      );
+    }).catch((caught) => {
+      setScrapeError(caught instanceof Error ? caught.message : "Unable to restore Payroll V2.");
+    });
+  }, [activeSection]);
 
   function navigateToSection(section: WorkspaceSection) {
     const path =
@@ -259,6 +334,50 @@ export function PayrollImporter() {
     setSaveStatus("idle");
     setSaveError(null);
     setCopied(false);
+    benchmarkStartedAt.current = null;
+    benchmarkBaseMs.current = 0;
+    setBenchmarkElapsedMs(0);
+  }
+
+  async function persistPayrollV2Run(
+    run: PayrollScrapeRun,
+    status: PayrollV2RunStatus,
+    elapsedMs = benchmarkElapsedMs,
+  ) {
+    if (activeSection !== "payroll-v2") return;
+    const now = new Date().toISOString();
+    await savePayrollV2Run({
+      id: run.run_id,
+      start_date: startDateInput,
+      end_date: endDateInput,
+      status,
+      created_at: run.started_at,
+      updated_at: now,
+      elapsed_ms: elapsedMs,
+      run: {
+        ...run,
+        store_results: run.store_results.map((store) => ({
+          ...store,
+          scraped_html: null,
+        })),
+      },
+    });
+  }
+
+  function updateLiveTimeclockProgress(
+    storeNumber: string,
+    completed: number,
+    expected: number,
+    durationMs: number,
+  ) {
+    setScrapeRun((current) => current ? {
+      ...current,
+      store_results: current.store_results.map((store) =>
+        store.store_number === storeNumber
+          ? { ...store, timeclocks: { completed, expected, duration_ms: durationMs } }
+          : store,
+      ),
+    } : current);
   }
 
   async function copyPayload() {
@@ -327,6 +446,8 @@ export function PayrollImporter() {
       startDate: string;
     },
   ) {
+    const controller = new AbortController();
+    activeControllers.current.add(controller);
     try {
       const response = await fetch("/api/scrape-runs", {
         method: "POST",
@@ -341,6 +462,7 @@ export function PayrollImporter() {
             stores: [storeNumber],
           }),
         ),
+        signal: controller.signal,
       });
 
       if (!response.ok) {
@@ -349,9 +471,11 @@ export function PayrollImporter() {
 
       const run = (await response.json()) as PayrollScrapeRun;
       if (reportType === "payroll" && includeTimeclocks) {
+        updateLiveTimeclockProgress(storeNumber, 0, 0, 0);
         const timeclocks = await scrapeTimeclocksForStore({
           endDate,
           runId,
+          signal: controller.signal,
           startDate,
           storeNumber,
         });
@@ -361,6 +485,15 @@ export function PayrollImporter() {
       }
       return run;
     } catch (caught) {
+      if (controller.signal.aborted) {
+        return createFailedScrapeRun({
+          error: "Cancelled; completed employee checkpoints were retained.",
+          finishedAt: new Date().toISOString(),
+          reportType,
+          startedAt,
+          stores: [storeNumber],
+        });
+      }
       return createFailedScrapeRun({
         error:
           caught instanceof Error
@@ -371,10 +504,14 @@ export function PayrollImporter() {
         startedAt,
         stores: [storeNumber],
       });
+    } finally {
+      activeControllers.current.delete(controller);
     }
   }
 
   async function startScrapeRun() {
+    cancelRequested.current = false;
+    startBenchmark();
     setScrapeStatus("running");
     setScrapeError(null);
     setScrapeRun(null);
@@ -394,6 +531,7 @@ export function PayrollImporter() {
       });
 
       setScrapeRun(workingRun);
+      await persistPayrollV2Run(workingRun, "running", 0);
 
       workingRun = await runStoreBatches({
         batchSize,
@@ -404,14 +542,24 @@ export function PayrollImporter() {
         stores,
       });
 
-      setScrapeStatus("complete");
+      if (!cancelRequested.current) {
+        const finalStatus = workingRun.status === "completed_with_errors"
+          ? "completed_with_errors"
+          : "completed";
+        setScrapeStatus("complete");
+        await persistPayrollV2Run(workingRun, finalStatus, currentBenchmarkElapsed());
+      }
     } catch (caught) {
-      setScrapeStatus("error");
-      setScrapeError(
-        caught instanceof Error
-          ? caught.message
-          : "Unable to complete this scrape run.",
-      );
+      if (!cancelRequested.current) {
+        setScrapeStatus("error");
+        setScrapeError(
+          caught instanceof Error
+            ? caught.message
+            : "Unable to complete this scrape run.",
+        );
+      }
+    } finally {
+      finishBenchmark();
     }
   }
 
@@ -420,6 +568,8 @@ export function PayrollImporter() {
       return;
     }
 
+    cancelRequested.current = false;
+    startBenchmark(benchmarkElapsedMs);
     setScrapeStatus("running");
     setScrapeError(null);
     setSaveStatus("idle");
@@ -429,7 +579,7 @@ export function PayrollImporter() {
     try {
       const selectedReportType = scrapeRun.report_type ?? reportType;
 
-      await runStoreBatches({
+      const workingRun = await runStoreBatches({
         batchSize: DEFAULT_SCRAPE_BATCH_SIZE,
         includeTimeclocks: activeSection === "payroll-v2",
         reportType: selectedReportType,
@@ -438,13 +588,96 @@ export function PayrollImporter() {
         stores,
       });
 
-      setScrapeStatus("complete");
+      if (!cancelRequested.current) {
+        const finalStatus = workingRun.status === "completed_with_errors"
+          ? "completed_with_errors"
+          : "completed";
+        setScrapeStatus("complete");
+        await persistPayrollV2Run(workingRun, finalStatus, currentBenchmarkElapsed());
+      }
     } catch (caught) {
       setScrapeStatus("error");
       setScrapeError(
         caught instanceof Error ? caught.message : "Unable to retry failed stores.",
       );
+    } finally {
+      finishBenchmark();
     }
+  }
+
+  async function resumePayrollV2() {
+    if (!scrapeRun || activeSection !== "payroll-v2") return;
+    const remainingStores = scrapeRun.store_results
+      .filter((store) => store.status !== "done")
+      .map((store) => store.store_number);
+    if (remainingStores.length === 0) return;
+
+    cancelRequested.current = false;
+    startBenchmark(benchmarkElapsedMs);
+    setScrapeStatus("running");
+    setScrapeError(null);
+    await persistPayrollV2Run(scrapeRun, "running", benchmarkElapsedMs);
+
+    try {
+      const workingRun = await runStoreBatches({
+        batchSize: DEFAULT_SCRAPE_BATCH_SIZE,
+        includeTimeclocks: true,
+        reportType: scrapeRun.report_type ?? "payroll",
+        run: scrapeRun,
+        startedAt: new Date().toISOString(),
+        stores: remainingStores,
+      });
+      if (!cancelRequested.current) {
+        const finalStatus = workingRun.status === "completed_with_errors"
+          ? "completed_with_errors"
+          : "completed";
+        setScrapeStatus("complete");
+        await persistPayrollV2Run(workingRun, finalStatus, currentBenchmarkElapsed());
+      }
+    } catch (caught) {
+      if (!cancelRequested.current) {
+        setScrapeStatus("error");
+        setScrapeError(caught instanceof Error ? caught.message : "Unable to resume Payroll V2.");
+      }
+    } finally {
+      finishBenchmark();
+    }
+  }
+
+  function cancelPayrollV2() {
+    if (activeSection !== "payroll-v2" || scrapeStatus !== "running") return;
+    cancelRequested.current = true;
+    const elapsed = currentBenchmarkElapsed();
+    for (const controller of activeControllers.current) controller.abort();
+    finishBenchmark();
+    setScrapeStatus("paused");
+    setScrapeRun((current) => {
+      if (!current) return current;
+      const pausedRun = {
+        ...current,
+        status: "running" as const,
+        store_results: current.store_results.map((store) =>
+          store.status === "scraping" || store.status === "parsing"
+            ? { ...store, status: "queued" as const, error: undefined }
+            : store,
+        ),
+      };
+      void persistPayrollV2Run(pausedRun, "paused", elapsed);
+      return pausedRun;
+    });
+  }
+
+  async function reloadAllPayrollV2() {
+    if (activeSection !== "payroll-v2" || scrapeStatus === "running") return;
+    if (
+      scrapeRun &&
+      !window.confirm(
+        "Delete this Payroll V2 run and all saved employee checkpoints, then scrape every store again?",
+      )
+    ) return;
+    if (scrapeRun) await deletePayrollV2Run(scrapeRun.run_id);
+    clearScrapeResults();
+    await startScrapeRun();
   }
 
   async function runStoreBatches({
@@ -465,8 +698,10 @@ export function PayrollImporter() {
     let workingRun = run;
 
     for (const batch of chunkStoreNumbers(stores, batchSize)) {
+      if (cancelRequested.current) break;
       workingRun = markStoresScraping(workingRun, batch);
       setScrapeRun(workingRun);
+      await persistPayrollV2Run(workingRun, "running", currentBenchmarkElapsed());
 
       const batchRuns = await Promise.all(
         batch.map((storeNumber) =>
@@ -481,10 +716,13 @@ export function PayrollImporter() {
         ),
       );
 
+      if (cancelRequested.current) break;
+
       workingRun = mergeScrapeRunBatch(workingRun, batchRuns, {
         finishedAt: new Date().toISOString(),
       });
       setScrapeRun(workingRun);
+      await persistPayrollV2Run(workingRun, "running", currentBenchmarkElapsed());
     }
 
     return workingRun;
@@ -493,11 +731,13 @@ export function PayrollImporter() {
   async function scrapeTimeclocksForStore({
     endDate,
     runId,
+    signal,
     startDate,
     storeNumber,
   }: {
     endDate: string;
     runId: string;
+    signal: AbortSignal;
     startDate: string;
     storeNumber: string;
   }) {
@@ -518,6 +758,7 @@ export function PayrollImporter() {
         start_date: startDate,
         store_number: storeNumber,
       }),
+      signal,
     });
     if (!response.ok || !response.body) throw new Error(await readApiError(response));
 
@@ -526,6 +767,8 @@ export function PayrollImporter() {
     let buffer = "";
     let expected: PayrollEmployeeRef[] = [];
     let sessionError: string | null = null;
+    let sessionElapsedMs = 0;
+    const localSessionStartedAt = Date.now();
     const latest = new Map(existing.map((record) => [employeeKey(record), record]));
 
     const processEvent = async (line: string) => {
@@ -534,9 +777,17 @@ export function PayrollImporter() {
         expected?: PayrollEmployeeRef[];
         checkpoint?: EmployeeTimeclockCheckpoint;
         error?: string;
+        elapsed_ms?: number;
       };
       if (event.type === "employee_list" && Array.isArray(event.expected)) {
         expected = event.expected;
+        const completion = reconcileTimeclocks(expected, [...latest.values()]);
+        updateLiveTimeclockProgress(
+          storeNumber,
+          completion.completed.length,
+          expected.length,
+          Date.now() - localSessionStartedAt,
+        );
       } else if (event.type === "employee_checkpoint" && event.checkpoint) {
         const identity = employeeKey(event.checkpoint);
         const previous = identity ? latest.get(identity) : undefined;
@@ -546,8 +797,18 @@ export function PayrollImporter() {
         };
         await savePayrollTimeclockCheckpoint(checkpoint);
         if (identity) latest.set(identity, checkpoint);
+        const completion = reconcileTimeclocks(expected, [...latest.values()]);
+        updateLiveTimeclockProgress(
+          storeNumber,
+          completion.completed.length,
+          expected.length,
+          Date.now() - localSessionStartedAt,
+        );
       } else if (event.type === "session_failed") {
+        sessionElapsedMs = event.elapsed_ms ?? Date.now() - localSessionStartedAt;
         sessionError = event.error ?? "Payroll timeclock session failed.";
+      } else if (event.type === "session_completed") {
+        sessionElapsedMs = event.elapsed_ms ?? Date.now() - localSessionStartedAt;
       }
     };
 
@@ -568,7 +829,11 @@ export function PayrollImporter() {
         `Timeclocks incomplete: ${completion.failed.length} failed, ${completion.missing.length} missing, ${completion.unavailable.length} unavailable.`,
       );
     }
-    return { completed: completion.completed.length, expected: expected.length };
+    return {
+      completed: completion.completed.length,
+      expected: expected.length,
+      duration_ms: sessionElapsedMs || Date.now() - localSessionStartedAt,
+    };
   }
 
   async function savePayload() {
@@ -691,6 +956,45 @@ export function PayrollImporter() {
               </Box>
 
               <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
+                {activeSection === "payroll-v2" ? (
+                  <>
+                    <Button
+                      variant="outlined"
+                      startIcon={<RetryIcon />}
+                      disabled={
+                        scrapeStatus === "running" ||
+                        !scrapeRun ||
+                        scrapeRun.store_results.every((store) => store.status === "done")
+                      }
+                      onClick={resumePayrollV2}
+                    >
+                      Resume
+                    </Button>
+                    <Button
+                      color="warning"
+                      variant="outlined"
+                      startIcon={<RetryIcon />}
+                      disabled={
+                        scrapeStatus === "running" ||
+                        !startDateInput ||
+                        !endDateInput ||
+                        hasInvalidScrapeDateRange
+                      }
+                      onClick={reloadAllPayrollV2}
+                    >
+                      Reload All
+                    </Button>
+                    <Button
+                      color="error"
+                      variant="outlined"
+                      startIcon={<ClearIcon />}
+                      disabled={scrapeStatus !== "running"}
+                      onClick={cancelPayrollV2}
+                    >
+                      Cancel
+                    </Button>
+                  </>
+                ) : null}
                 <Button
                   variant="outlined"
                   startIcon={<RetryIcon />}
@@ -727,6 +1031,7 @@ export function PayrollImporter() {
             </Stack>
 
             <ScrapePanel
+              benchmarkElapsedMs={benchmarkElapsedMs}
               endDateInput={endDateInput}
               hasInvalidDateRange={hasInvalidScrapeDateRange}
               reportOptions={
@@ -756,6 +1061,12 @@ export function PayrollImporter() {
             {scrapeStatus === "error" && scrapeError ? (
               <Alert severity="error" icon={<WarningIcon />}>
                 {scrapeError}
+              </Alert>
+            ) : null}
+
+            {activeSection === "payroll-v2" && scrapeStatus === "paused" ? (
+              <Alert severity="info">
+                Payroll V2 is paused. Completed employee timeclocks are saved in this browser; Resume skips them and continues the unfinished stores.
               </Alert>
             ) : null}
 
@@ -973,6 +1284,7 @@ function SectionHeader({
 }
 
 function ScrapePanel({
+  benchmarkElapsedMs,
   endDateInput,
   hasInvalidDateRange,
   reportOptions,
@@ -989,6 +1301,7 @@ function ScrapePanel({
   onStart,
   retryDisabled,
 }: {
+  benchmarkElapsedMs: number;
   endDateInput: string;
   hasInvalidDateRange: boolean;
   reportOptions: FlexeposReportOption[];
@@ -1022,6 +1335,11 @@ function ScrapePanel({
           <Chip label={`${scrapeProgress.percent}% complete`} size="small" />
           <Chip label={`${scrapeSummary.rows} rows`} size="small" />
           <Chip label={`${scrapeSummary.sections} section(s)`} size="small" />
+          <Chip
+            color={scrapeStatus === "running" ? "primary" : "default"}
+            label={`Elapsed ${formatElapsedTime(benchmarkElapsedMs)}`}
+            size="small"
+          />
         </Box>
       </SectionHeader>
       <Divider />
@@ -1102,6 +1420,7 @@ function ScrapePanel({
               color="secondary"
               disabled={
                 scrapeStatus === "running" ||
+                scrapeStatus === "paused" ||
                 !startDateInput ||
                 !endDateInput ||
                 hasInvalidDateRange
@@ -1110,7 +1429,11 @@ function ScrapePanel({
               startIcon={<ScrapeIcon />}
               variant="contained"
             >
-              {scrapeStatus === "running" ? "Scraping" : "Start Scrape"}
+              {scrapeStatus === "running"
+                ? "Scraping"
+                : scrapeStatus === "paused"
+                  ? "Paused"
+                  : "Start Scrape"}
             </Button>
           </Box>
         </Stack>
@@ -1209,6 +1532,7 @@ function ScrapeStoreTable({
             <TableCell align="right">Rows</TableCell>
             <TableCell align="right">Sections</TableCell>
             <TableCell align="right">Timeclocks</TableCell>
+            <TableCell align="right">Duration</TableCell>
             <TableCell>Notes</TableCell>
             <TableCell align="right">Action</TableCell>
           </TableRow>
@@ -1227,9 +1551,29 @@ function ScrapeStoreTable({
               </TableCell>
               <TableCell align="right">{store.rows}</TableCell>
               <TableCell align="right">{store.sections}</TableCell>
+              <TableCell align="right" sx={{ minWidth: 150 }}>
+                {store.timeclocks ? (
+                  <Stack spacing={0.5}>
+                    <Typography variant="caption">
+                      {store.timeclocks.completed}/{store.timeclocks.expected} employees
+                    </Typography>
+                    <LinearProgress
+                      aria-label={`Store ${store.store_number} employee timeclock progress`}
+                      value={
+                        store.timeclocks.expected > 0
+                          ? Math.round(
+                              (store.timeclocks.completed / store.timeclocks.expected) * 100,
+                            )
+                          : undefined
+                      }
+                      variant={store.timeclocks.expected > 0 ? "determinate" : "indeterminate"}
+                    />
+                  </Stack>
+                ) : "-"}
+              </TableCell>
               <TableCell align="right">
                 {store.timeclocks
-                  ? `${store.timeclocks.completed}/${store.timeclocks.expected}`
+                  ? formatElapsedTime(store.timeclocks.duration_ms)
                   : "-"}
               </TableCell>
               <TableCell sx={{ color: "text.secondary" }}>

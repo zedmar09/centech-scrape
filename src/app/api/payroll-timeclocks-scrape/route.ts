@@ -41,10 +41,23 @@ export async function POST(request: NextRequest) {
   if (!parsed.ok) return Response.json({ error: parsed.error }, { status: 400 });
 
   const encoder = new TextEncoder();
+  let browser: Awaited<ReturnType<typeof createBrowser>> | null = null;
+  let aborted = request.signal.aborted;
+  const closeBrowser = async () => {
+    const activeBrowser = browser;
+    browser = null;
+    await activeBrowser?.close().catch(() => undefined);
+  };
+  request.signal.addEventListener("abort", () => {
+    aborted = true;
+    void closeBrowser();
+  }, { once: true });
   const stream = new ReadableStream({
     async start(controller) {
-      const send = (event: unknown) => controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
-      let browser: Awaited<ReturnType<typeof createBrowser>> | null = null;
+      const send = (event: unknown) => {
+        if (!aborted) controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+      };
+      const sessionStartedAt = Date.now();
       try {
         const config = createFlexeposPayrollConfig(process.env, {
           startDate: parsed.value.startDate,
@@ -83,6 +96,7 @@ export async function POST(request: NextRequest) {
             })),
           });
           for (const employee of links) {
+            if (aborted) break;
             const identity = employeeKey(employee);
             if (!identity || parsed.value.completedKeys.has(identity)) continue;
             const base = {
@@ -96,21 +110,32 @@ export async function POST(request: NextRequest) {
               pay_period_start: config.startDate ?? "",
               pay_period_end: config.endDate ?? "",
             };
-            try {
-              const rows = await scrapeEmployeeTimeclock(page, employee, config);
+            const employeeStartedAt = Date.now();
+            let rows: TimeclockRow[] | null = null;
+            let lastError: unknown;
+            let attempts = 0;
+            for (let attempt = 1; attempt <= 2 && !rows && !aborted; attempt += 1) {
+              attempts = attempt;
+              try {
+                rows = await scrapeEmployeeTimeclock(page, employee, config);
+              } catch (caught) {
+                lastError = caught;
+                if (attempt < 2) send({ type: "employee_retrying", employee, attempt: attempt + 1 });
+              }
+            }
+            if (aborted) break;
+            if (rows) {
               const checkpoint: EmployeeTimeclockCheckpoint = {
-                ...base,
-                attempts: 1,
-                rows,
-                status: "completed",
-                updated_at: new Date().toISOString(),
+                ...base, attempts, duration_ms: Date.now() - employeeStartedAt,
+                rows, status: "completed", updated_at: new Date().toISOString(),
               };
               send({ type: "employee_checkpoint", checkpoint });
-            } catch (caught) {
+            } else {
               const checkpoint: EmployeeTimeclockCheckpoint = {
                 ...base,
-                attempts: 1,
-                error: caught instanceof Error ? caught.message : "Timeclock scrape failed.",
+                attempts,
+                duration_ms: Date.now() - employeeStartedAt,
+                error: lastError instanceof Error ? lastError.message : "Timeclock scrape failed.",
                 rows: [],
                 status: "failed",
                 updated_at: new Date().toISOString(),
@@ -118,16 +143,26 @@ export async function POST(request: NextRequest) {
               send({ type: "employee_checkpoint", checkpoint });
             }
           }
-          send({ type: "session_completed" });
+          if (!aborted) send({ type: "session_completed", elapsed_ms: Date.now() - sessionStartedAt });
         } finally {
           await context.close().catch(() => undefined);
         }
       } catch (caught) {
-        send({ type: "session_failed", error: caught instanceof Error ? caught.message : "Payroll timeclock session failed." });
+        if (!aborted) {
+          send({
+            type: "session_failed",
+            elapsed_ms: Date.now() - sessionStartedAt,
+            error: caught instanceof Error ? caught.message : "Payroll timeclock session failed.",
+          });
+        }
       } finally {
-        await browser?.close().catch(() => undefined);
-        controller.close();
+        await closeBrowser();
+        if (!aborted) controller.close();
       }
+    },
+    async cancel() {
+      aborted = true;
+      await closeBrowser();
     },
   });
   return new Response(stream, {
@@ -164,9 +199,14 @@ async function scrapeEmployeeTimeclock(
   employee: EmployeeLink,
   config: ReturnType<typeof createFlexeposPayrollConfig>,
 ) {
-  await gotoWithRetry(page, employee.href, config);
+  const detailConfig = {
+    ...config,
+    navigationTimeoutMs: Math.max(config.navigationTimeoutMs, 20_000),
+    timeoutMs: Math.max(config.timeoutMs, 20_000),
+  };
+  await gotoWithRetry(page, employee.href, detailConfig);
   const adjust = page.locator("input[type='submit'][value='Adjust Time']").first();
-  await adjust.waitFor({ state: "visible", timeout: config.timeoutMs });
+  await adjust.waitFor({ state: "visible", timeout: detailConfig.timeoutMs });
   await adjust.click();
   await page.waitForLoadState("domcontentloaded").catch(() => undefined);
   const detail = await page.evaluate(() => {

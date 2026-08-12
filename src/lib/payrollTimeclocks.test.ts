@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   employeeKey,
+  formatElapsedTime,
   expectedPayrollEmployees,
   reconcileTimeclocks,
   runEmployeeTimeclockJobs,
@@ -34,6 +35,13 @@ function checkpoint(index: number, status: EmployeeTimeclockCheckpoint["status"]
 }
 
 describe("payroll timeclock completion", () => {
+  it("formats benchmark durations for quick comparisons", () => {
+    expect(formatElapsedTime(842)).toBe("842ms");
+    expect(formatElapsedTime(12_345)).toBe("12.345s");
+    expect(formatElapsedTime(72_345)).toBe("1m 12s");
+    expect(formatElapsedTime(3_672_345)).toBe("1h 1m 12s");
+  });
+
   it("prefers employee ID and falls back to employee number", () => {
     expect(employeeKey(expected[0])).toBe("id:10");
     expect(employeeKey({ employee_id: null, employee_number: 1001 })).toBe("number:1001");

@@ -18,6 +18,7 @@ export type PayrollScrapeStoreResult = {
   timeclocks?: {
     completed: number;
     expected: number;
+    duration_ms: number;
   };
 };
 

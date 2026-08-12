@@ -24,6 +24,7 @@ export type EmployeeTimeclockCheckpoint = PayrollEmployeeRef & {
   status: TimeclockStatus;
   rows: TimeclockRow[];
   attempts: number;
+  duration_ms?: number;
   updated_at: string;
   error?: string;
 };
@@ -192,4 +193,18 @@ export function validateTimeclockResult(input: {
   }
   if (!input.tableFound) throw new Error("Adjust Time table was not found.");
   return input.rows;
+}
+
+export function formatElapsedTime(durationMs: number) {
+  const safeDuration = Math.max(0, durationMs);
+  const totalSeconds = Math.floor(safeDuration / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const milliseconds = Math.floor(safeDuration % 1000);
+
+  if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  if (totalSeconds > 0) return `${seconds}.${String(milliseconds).padStart(3, "0")}s`;
+  return `${milliseconds}ms`;
 }

@@ -60,6 +60,7 @@ export type RunFlexeposPayrollScrapeInput = {
   config?: FlexeposPayrollConfig;
   createRunId?: () => string;
   now?: () => Date;
+  signal?: AbortSignal;
 };
 
 type PayrollScraperEnv = Record<string, string | undefined>;
@@ -255,6 +256,7 @@ export async function runFlexeposPayrollScrape({
   config = createFlexeposPayrollConfig(),
   createRunId = createDefaultRunId,
   now = () => new Date(),
+  signal,
 }: RunFlexeposPayrollScrapeInput): Promise<PayrollScrapeRun> {
   const selectedStores = resolveRequestedStores(stores, config);
 
@@ -262,8 +264,11 @@ export async function runFlexeposPayrollScrape({
 
   const startedAt = now().toISOString();
   const browser = await createBrowser(config);
+  const closeOnAbort = () => void browser.close().catch(() => undefined);
+  signal?.addEventListener("abort", closeOnAbort, { once: true });
 
   try {
+    if (signal?.aborted) throw new Error("Payroll scrape cancelled.");
     const context = await browser.newContext({
       ignoreHTTPSErrors: false,
       userAgent:
@@ -281,6 +286,7 @@ export async function runFlexeposPayrollScrape({
     const parseResults: ScrapeParseResult[] = [];
 
     for (const storeNumber of selectedStores) {
+      if (signal?.aborted) throw new Error("Payroll scrape cancelled.");
       const storeRun = await scrapeFlexeposStore(page, config, reportUrl, storeNumber);
       storeResults.push(storeRun.storeResult);
 
@@ -301,7 +307,8 @@ export async function runFlexeposPayrollScrape({
       result: combineScrapeParseResults(parseResults),
     };
   } finally {
-    await browser.close();
+    signal?.removeEventListener("abort", closeOnAbort);
+    await browser.close().catch(() => undefined);
   }
 }
 
